@@ -1,18 +1,22 @@
 package md4agents
 
 import (
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // entry is what we hand back to a request. ETag is the hex SHA-256 of the
-// markdown body — clients use it for If-None-Match revalidation, and the
-// pre-generator uses it to skip re-converting unchanged sources.
+// markdown body. Headers carries the safe-allowlist subset of the upstream
+// response that produced this entry so cache hits and 304s replay the same
+// downstream-cache hints (Cache-Control, Vary, etc.) the first request saw.
 type entry struct {
 	Markdown []byte
 	ETag     string
+	Headers  http.Header
 	Created  time.Time
 }
 
@@ -20,20 +24,18 @@ func (e *entry) expired(ttl time.Duration) bool {
 	return ttl > 0 && time.Since(e.Created) > ttl
 }
 
-// markdownCache wraps an LRU with a byte budget. Both an entry-count cap and a
-// total-byte cap apply; an Add evicts oldest entries until both budgets fit.
-//
-// Bounding by count alone is unsafe: 4096 × 4 MiB ≈ 16 GiB in the worst case.
-// MaxEntryBytes additionally rejects oversized single entries so one giant
-// page can't dominate the cache or DOS the byte accounting.
+// markdownCache wraps an LRU with a byte budget. Byte accounting uses an
+// atomic counter so the eviction callback (which runs under the LRU's
+// own mutex) can update it without risking a lock-order inversion with
+// the caller of Put/Get.
 type markdownCache struct {
-	mu       sync.Mutex
 	lru      *lru.Cache[string, *entry]
 	ttl      time.Duration
 	maxBytes int64
 	maxEntry int64
-	bytes    int64
+	bytes    atomic.Int64
 
+	mu       sync.Mutex
 	inflight map[string]*inflightCall
 }
 
@@ -48,22 +50,17 @@ func newCache(entries int, ttl time.Duration, maxBytes, maxEntry int64) (*markdo
 		entries = 4096
 	}
 	if maxBytes <= 0 {
-		maxBytes = 256 << 20 // 256 MiB
+		maxBytes = 256 << 20
 	}
 	if maxEntry <= 0 {
-		maxEntry = 1 << 20 // 1 MiB per entry
+		maxEntry = 1 << 20
 	}
 	c := &markdownCache{
 		ttl: ttl, maxBytes: maxBytes, maxEntry: maxEntry,
 		inflight: make(map[string]*inflightCall),
 	}
 	l, err := lru.NewWithEvict[string, *entry](entries, func(_ string, e *entry) {
-		c.mu.Lock()
-		c.bytes -= int64(len(e.Markdown))
-		if c.bytes < 0 {
-			c.bytes = 0
-		}
-		c.mu.Unlock()
+		c.bytes.Add(-int64(len(e.Markdown)))
 	})
 	if err != nil {
 		return nil, err
@@ -84,30 +81,27 @@ func (c *markdownCache) get(key string) (*entry, bool) {
 	return e, true
 }
 
-// put rejects oversized entries and evicts oldest until the byte budget fits.
-// Returns false if the entry was too large to admit.
+// put rejects oversized entries and pre-evicts oldest until the byte
+// budget admits the new one. Returns false if the entry was too large.
 func (c *markdownCache) put(key string, e *entry) bool {
 	size := int64(len(e.Markdown))
 	if size > c.maxEntry {
 		return false
 	}
-	c.mu.Lock()
-	for c.bytes+size > c.maxBytes && c.lru.Len() > 0 {
-		// RemoveOldest triggers our evict callback, which decrements bytes.
-		c.mu.Unlock()
-		c.lru.RemoveOldest()
-		c.mu.Lock()
+	for c.bytes.Load()+size > c.maxBytes {
+		if _, _, ok := c.lru.RemoveOldest(); !ok {
+			// Empty cache and still over budget — give up rather than spin.
+			break
+		}
 	}
-	c.bytes += size
-	c.mu.Unlock()
+	c.bytes.Add(size)
 	c.lru.Add(key, e)
 	return true
 }
 
 func (c *markdownCache) purge(key string) { c.lru.Remove(key) }
 
-// do collapses concurrent calls for the same key. The fn is only executed
-// once; other callers wait and receive the same result.
+// do collapses concurrent calls for the same key.
 func (c *markdownCache) do(key string, fn func() (*entry, error)) (*entry, error) {
 	if e, ok := c.get(key); ok {
 		return e, nil
@@ -139,9 +133,6 @@ func (c *markdownCache) do(key string, fn func() (*entry, error)) (*entry, error
 	return call.e, call.err
 }
 
-// stats returns current totals; used by tests.
 func (c *markdownCache) stats() (entries int, bytes int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lru.Len(), c.bytes
+	return c.lru.Len(), c.bytes.Load()
 }

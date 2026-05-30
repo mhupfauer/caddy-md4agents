@@ -262,17 +262,22 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 		return rec.flush()
 	}
 
+	// Snapshot the upstream headers (allowlist) and Vary union before we
+	// throw the captured response away. These ride along with the
+	// converted entry so cache hits replay the same downstream-cache
+	// semantics the first request saw.
+	passthrough := snapshotSafeHeaders(rec.Header())
+	mergeVary(passthrough, rec.Header().Get("Vary"))
+
 	convert := func() (*entry, error) {
 		md, cerr := m.convertWithTimeout(r.Context(), rec.body.Bytes())
 		if cerr != nil {
 			return nil, cerr
 		}
-		return newEntry([]byte(md)), nil
+		e := newEntry([]byte(md))
+		e.Headers = passthrough
+		return e, nil
 	}
-
-	// Snapshot the upstream headers we want to pass through *before* we
-	// overwrite the response.
-	passthrough := snapshotSafeHeaders(rec.Header())
 
 	var (
 		e   *entry
@@ -288,7 +293,7 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 			zap.String("path", cacheKey), zap.Error(err))
 		return rec.flush()
 	}
-	return m.writeMarkdown(w, r, e, passthrough)
+	return m.writeMarkdown(w, r, e, nil)
 }
 
 // cacheCapability returns (canRead, canWrite). HEAD may *read* a cache
@@ -434,15 +439,22 @@ func snapshotSafeHeaders(h http.Header) http.Header {
 	return out
 }
 
-func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request, e *entry, upstream http.Header) error {
+// writeMarkdown emits the markdown body (or a 304) and the cache-relevant
+// headers stored on the entry. Pre-stored headers always win over the
+// `extra` param (which dynamic-path may pass for the initial request),
+// but `extra` lets the static path pass nil since it has no upstream.
+func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request, e *entry, extra http.Header) error {
+	stored := e.Headers
+	if stored == nil {
+		stored = extra
+	}
+
 	if ifNoneMatchHits(r.Header.Get("If-None-Match"), e.ETag) {
-		// 304 must still carry the cache-relevant headers so downstream
-		// caches can apply them. RFC 7232 §4.1.
 		h := w.Header()
 		h.Set("ETag", e.ETag)
-		h.Set("Vary", "Accept")
+		setMergedVary(h, stored)
 		for _, k := range []string{"Cache-Control", "Expires", "Content-Language"} {
-			if v := upstream.Get(k); v != "" {
+			if v := stored.Get(k); v != "" {
 				h.Set(k, v)
 			}
 		}
@@ -450,22 +462,60 @@ func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request
 		return nil
 	}
 	h := w.Header()
-	for k, vs := range upstream {
+	for k, vs := range stored {
+		if strings.EqualFold(k, "Vary") {
+			continue // handled below
+		}
 		for _, v := range vs {
 			h.Add(k, v)
 		}
 	}
 	h.Set("Content-Type", "text/markdown; charset=utf-8")
 	h.Set("ETag", e.ETag)
-	h.Set("Vary", "Accept")
+	setMergedVary(h, stored)
 	h.Set("Content-Length", strconv.Itoa(len(e.Markdown)))
 	w.WriteHeader(http.StatusOK)
-	// RFC 9110 §15.3 — HEAD responses MUST NOT include a body.
 	if r.Method == http.MethodHead {
 		return nil
 	}
 	_, err := w.Write(e.Markdown)
 	return err
+}
+
+// setMergedVary writes a Vary header that always includes "Accept" plus
+// any tokens upstream contributed. Without this, a downstream cache
+// might store a French markdown response and replay it to a client
+// asking for English, because upstream's Accept-Language vary signal
+// got dropped on the rewritten response.
+func setMergedVary(h http.Header, stored http.Header) {
+	seen := map[string]struct{}{"accept": {}}
+	out := []string{"Accept"}
+	if stored != nil {
+		for _, v := range stored.Values("Vary") {
+			for _, tok := range strings.Split(v, ",") {
+				tok = strings.TrimSpace(tok)
+				if tok == "" {
+					continue
+				}
+				key := strings.ToLower(tok)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, tok)
+			}
+		}
+	}
+	h.Set("Vary", strings.Join(out, ", "))
+}
+
+// mergeVary adds the upstream Vary value into the snapshotted header
+// map under "Vary" key so it survives into the cache entry.
+func mergeVary(dst http.Header, upstreamVary string) {
+	if upstreamVary == "" {
+		return
+	}
+	dst.Set("Vary", upstreamVary)
 }
 
 // ifNoneMatchHits parses an If-None-Match value (RFC 7232 §3.2).

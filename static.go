@@ -21,6 +21,13 @@ import (
 // convert and serve the result, defeating the static-path guard.
 var errPathEscape = errors.New("path escapes root")
 
+// errSourceUnavailable is the public-facing error we surface to Caddy
+// when something filesystem-level went wrong. The real cause (path,
+// size, errno) goes to the structured log; we don't want a stray "file
+// /etc/secrets/x.html does not exist" leaking into a client-visible
+// error page if the operator's error_handler echoes Caddy errors.
+var errSourceUnavailable = errors.New("source unavailable")
+
 // serveStatic implements the static-first lookup. It returns (served=true)
 // when the request was fully handled (success, 304, or refused-as-escape);
 // served=false means the caller should fall back to the dynamic path.
@@ -157,30 +164,34 @@ func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, ab
 func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Request, htmlPath string) error {
 	st, err := os.Stat(htmlPath)
 	if err != nil {
-		return err
+		m.log.Debug("static stat failed", zap.String("file", htmlPath), zap.Error(err))
+		return errSourceUnavailable
 	}
 	if st.Size() > m.MaxBodyBytes {
-		return fmt.Errorf("source %s exceeds max_body_bytes (%d > %d)",
-			htmlPath, st.Size(), m.MaxBodyBytes)
+		m.log.Warn("source exceeds max_body_bytes",
+			zap.String("file", htmlPath),
+			zap.Int64("size", st.Size()),
+			zap.Int64("max", m.MaxBodyBytes))
+		return errSourceUnavailable
 	}
 	key := fmt.Sprintf("%s|%d|%d", htmlPath, st.ModTime().UnixNano(), st.Size())
 
 	e, err := m.cache.do(key, func() (*entry, error) {
 		f, err := os.Open(htmlPath)
 		if err != nil {
-			return nil, err
+			m.log.Debug("static open failed", zap.String("file", htmlPath), zap.Error(err))
+			return nil, errSourceUnavailable
 		}
-		// Re-stat from fd to close the TOCTOU window. If the source raced
-		// out from under us between Stat and Open, refuse rather than
-		// cache stale content under a now-wrong key.
 		st2, err := f.Stat()
 		if err != nil {
 			f.Close()
-			return nil, err
+			return nil, errSourceUnavailable
 		}
 		if st2.ModTime() != st.ModTime() || st2.Size() != st.Size() {
 			f.Close()
-			return nil, fmt.Errorf("source %s changed during open", htmlPath)
+			m.log.Info("source changed during open; refusing to cache stale",
+				zap.String("file", htmlPath))
+			return nil, errSourceUnavailable
 		}
 		return m.loadOrGenerateFromFile(r.Context(), htmlPath, f, st2)
 	})
@@ -206,15 +217,19 @@ func (m *MarkdownForAgents) loadOrGenerateFromFile(ctx context.Context, htmlPath
 
 	htmlBytes, err := io.ReadAll(io.LimitReader(f, m.MaxBodyBytes+1))
 	if err != nil {
-		return nil, err
+		m.log.Debug("static read failed", zap.String("file", htmlPath), zap.Error(err))
+		return nil, errSourceUnavailable
 	}
 	if int64(len(htmlBytes)) > m.MaxBodyBytes {
-		return nil, fmt.Errorf("source %s exceeds max_body_bytes during read", htmlPath)
+		m.log.Warn("source exceeded max_body_bytes during read",
+			zap.String("file", htmlPath))
+		return nil, errSourceUnavailable
 	}
 
 	md, err := m.convertWithTimeout(ctx, htmlBytes)
 	if err != nil {
-		return nil, fmt.Errorf("convert %s: %w", htmlPath, err)
+		m.log.Warn("conversion failed", zap.String("file", htmlPath), zap.Error(err))
+		return nil, errSourceUnavailable
 	}
 	mdBytes := []byte(md)
 

@@ -120,8 +120,8 @@ func TestStaticFileSizeCapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected size-cap error")
 	}
-	if !strings.Contains(err.Error(), "max_body_bytes") {
-		t.Fatalf("unexpected error: %v", err)
+	if err != errSourceUnavailable {
+		t.Fatalf("expected redacted errSourceUnavailable, got: %v", err)
 	}
 }
 
@@ -162,6 +162,77 @@ func TestSnapshotSafeHeaders(t *testing.T) {
 	}
 	if out.Get("Server") != "" {
 		t.Errorf("Server leaked")
+	}
+}
+
+func TestVaryMergedFromUpstream(t *testing.T) {
+	h := http.Header{}
+	stored := http.Header{}
+	stored.Set("Vary", "Accept-Language, User-Agent")
+	setMergedVary(h, stored)
+	got := h.Get("Vary")
+	if !strings.Contains(got, "Accept") {
+		t.Errorf("Vary missing Accept: %q", got)
+	}
+	if !strings.Contains(got, "Accept-Language") {
+		t.Errorf("Vary did not merge upstream Accept-Language: %q", got)
+	}
+	if !strings.Contains(got, "User-Agent") {
+		t.Errorf("Vary did not merge upstream User-Agent: %q", got)
+	}
+	// No duplicate Accept even when upstream also varies on Accept.
+	stored2 := http.Header{}
+	stored2.Set("Vary", "Accept, Accept-Language")
+	h2 := http.Header{}
+	setMergedVary(h2, stored2)
+	if strings.Count(h2.Get("Vary"), "Accept") < 2 {
+		t.Errorf("expected Accept + Accept-Language in: %q", h2.Get("Vary"))
+	}
+	if strings.Count(strings.ToLower(h2.Get("Vary")), "accept,") > 1 &&
+		!strings.Contains(strings.ToLower(h2.Get("Vary")), "accept-") {
+		t.Errorf("duplicate Accept in Vary: %q", h2.Get("Vary"))
+	}
+}
+
+func TestCacheEntryRetainsHeaders(t *testing.T) {
+	c, err := newCache(64, 0, 64<<20, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := http.Header{}
+	hdr.Set("Cache-Control", "public, max-age=300")
+	hdr.Set("Content-Language", "fr")
+	e := newEntry([]byte("# hi"))
+	e.Headers = hdr
+	c.put("k", e)
+
+	got, ok := c.get("k")
+	if !ok {
+		t.Fatal("cache miss")
+	}
+	if got.Headers.Get("Cache-Control") != "public, max-age=300" {
+		t.Errorf("CC lost: %v", got.Headers)
+	}
+	if got.Headers.Get("Content-Language") != "fr" {
+		t.Errorf("Lang lost: %v", got.Headers)
+	}
+}
+
+func TestErrorMessagesDontLeakPaths(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "big.html"),
+		"<html><body>"+strings.Repeat("x", 16<<10)+"</body></html>")
+	m := newTestModule(t, root)
+	m.MaxBodyBytes = 8 << 10
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/big.md", nil)
+	_, err := m.serveStatic(rec, req, "/big.html")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), root) || strings.Contains(err.Error(), "big.html") {
+		t.Fatalf("error leaks server path: %v", err)
 	}
 }
 

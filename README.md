@@ -132,6 +132,32 @@ The shared cache is, well, shared, so a few hard rules apply:
 - The in-memory cache is bounded by both entry count and total bytes;
   per-entry oversized responses are rejected outright.
 
+## Authorization placement
+
+The static-first path serves matched files directly without calling the
+next handler. That means any `basicauth`, `forward_auth`, `jwtauth`, or
+similar middleware that comes **after** `markdown_for_agents` in the
+Caddyfile chain will not run for markdown responses.
+
+In Caddy, the directive runs immediately before `file_server`, so the
+default placement of auth middleware (which is `before file_server`) is
+safe. If you place auth in a `handle` block that wraps both this module
+and `file_server`, ordering is preserved and auth still runs first.
+
+If your config puts auth after `file_server` (unusual), or applies path
+matchers that only target `*.html`, ensure the matcher also covers the
+URL suffix you've configured for markdown negotiation — e.g.
+`path *.html *.md`.
+
+## Personalization beyond cookies
+
+The `Authorization` and `Cookie` headers bypass the shared cache by
+default. If your application personalizes responses on **other**
+signals — mTLS, `X-Forwarded-User`, IP-based ACL — those are not
+considered cache-safe automatically. Either set `Cache-Control: private`
+on the upstream response (this module will honor it) or run separate
+module instances per personalization dimension.
+
 ## File system semantics
 
 - Paths are canonicalized at provision time and on every request via
