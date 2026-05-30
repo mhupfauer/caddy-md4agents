@@ -99,40 +99,59 @@ example.com {
 | Field | Default | Notes |
 | ----- | ------- | ----- |
 | `root` | — | Static file root. Enables the static-first path. |
-| `cache_dir` | `<caddy-data-dir>/md4agents/...` | Disk write-through cache; defaults outside `root` so `file_server` won't serve it. |
+| `cache_dir` | `<caddy-data-dir>/md4agents/<hash>` | Disk write-through cache; lives outside `root`. |
 | `url_suffix` | `.md` | URL suffix that requests Markdown. Empty disables. |
 | `query_param` | `format` | Query param checked for `md`/`markdown`. Empty disables. |
-| `cache_size` | `4096` | In-memory LRU capacity. |
+| `cache_size` | `4096` | In-memory LRU entry count. |
+| `cache_bytes` | `268435456` (256 MiB) | Total in-memory cache byte budget. |
+| `cache_entry_bytes` | `1048576` (1 MiB) | Per-entry cap; oversized entries are rejected. |
 | `cache_ttl` | `0` (no expiry) | TTL for in-memory entries; disk uses mtime. |
-| `max_body_bytes` | `4194304` | Dynamic-path body cap; over-cap streams through unconverted. |
-| `convert_timeout` | `5s` | Per-conversion timeout; on exceed, returns 503 and finishes in background. |
-| `pregenerate` | `false` | Walk `root` on startup and warm the cache. Optional. |
-| `allow_authenticated` | `false` | If true, cache responses to requests carrying `Authorization`/`Cookie`. Only enable for non-user-specific upstreams. |
+| `max_body_bytes` | `4194304` (4 MiB) | Source HTML size cap (both static disk reads and dynamic captures). |
+| `convert_timeout` | `5s` | Per-conversion timeout; on exceed, returns 503. |
+| `max_concurrent` | `max(4, NumCPU)` | Conversion semaphore — bounds CPU/goroutine usage. |
+| `pregenerate` | `false` | Walk `root` on startup and warm the cache. |
+| `janitor_interval` | `0` (off) | Periodic orphan-sidecar cleanup interval. |
+| `allow_authenticated` | `false` | If true, cache responses to requests carrying `Authorization`/`Cookie`. |
 | `main_selector` | — | If set, only this element's subtree is converted. |
 | `strip_tags` | `script style noscript iframe svg` | Tags removed entirely from output. |
 | `strip_selectors` | — | Simple `tag`, `.class`, `#id` selectors removed pre-conversion. |
 
 ## Cache safety
 
-The shared cache is shared across all clients, so a few hard rules apply:
+The shared cache is, well, shared, so a few hard rules apply:
 
 - Only `GET` and `HEAD` are cacheable.
 - Requests with `Authorization` or `Cookie` headers bypass the cache by
   default. Set `allow_authenticated` only when upstream content is not
   user-specific.
-- Upstream responses carrying `Set-Cookie` or `Cache-Control: private` /
-  `no-store` are converted and served once but never cached.
+- Upstream responses carrying `Set-Cookie`, `Cache-Control: private`,
+  `Cache-Control: no-store`, or a non-trivial `Vary` (anything beyond
+  `Accept-Encoding`) are converted and served once but never cached.
 - The dynamic-path cache key is `path + ?query`, so `/api/p?id=1` and
   `/api/p?id=2` do not collide.
+- The in-memory cache is bounded by both entry count and total bytes;
+  per-entry oversized responses are rejected outright.
 
 ## File system semantics
 
-- The resolver follows symlinks, matching `file_server`'s default behavior.
-  If your `root` contains a symlink pointing outside `root`, an explicit
-  request can read through it. Use `file_server`'s `hide` or normalize the
-  filesystem if that matters in your threat model.
-- The default `cache_dir` lives in `caddy.AppDataDir()/md4agents/` and is
-  never served by `file_server`.
+- Paths are canonicalized at provision time and on every request via
+  `filepath.EvalSymlinks`. If a request's target resolves outside `root`
+  (e.g. via a symlink in the tree), the module returns `404` and refuses
+  to fall through, preventing a downstream `file_server` + dynamic-path
+  conversion from leaking the file.
+- Source HTML is opened once and stat'd from the file descriptor, closing
+  the TOCTOU window between `stat` and `read`.
+- The default `cache_dir` lives in `caddy.AppDataDir()/md4agents/<hash>`
+  outside `root`. The segment name is a SHA-256 prefix only — the
+  original path's basename is never written into the data dir.
+- HEAD responses include all headers (including `Content-Length`) but no
+  body, per RFC 9110 §15.3.
+- Upstream headers from the dynamic path are whitelist-forwarded:
+  `Cache-Control`, `Expires`, `Last-Modified`, `Content-Language`,
+  `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`.
+  Everything else (notably `Set-Cookie`, `Server`, `X-Powered-By`) is
+  dropped.
 
 ## Cache layout
 

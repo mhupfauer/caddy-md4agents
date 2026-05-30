@@ -108,6 +108,42 @@ func (m *MarkdownForAgents) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("convert_timeout: %v", err)
 				}
 				m.ConvertTimeout = caddy.Duration(dur)
+			case "max_concurrent":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				n, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("max_concurrent: %v", err)
+				}
+				m.MaxConcurrent = n
+			case "cache_bytes":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				n, err := strconv.ParseInt(d.Val(), 10, 64)
+				if err != nil {
+					return d.Errf("cache_bytes: %v", err)
+				}
+				m.CacheBytes = n
+			case "cache_entry_bytes":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				n, err := strconv.ParseInt(d.Val(), 10, 64)
+				if err != nil {
+					return d.Errf("cache_entry_bytes: %v", err)
+				}
+				m.CacheEntryBytes = n
+			case "janitor_interval":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := time.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("janitor_interval: %v", err)
+				}
+				m.JanitorInterval = caddy.Duration(dur)
 			case "pregenerate":
 				m.Pregenerate = true
 			case "allow_authenticated":

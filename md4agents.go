@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +39,8 @@ type MarkdownForAgents struct {
 	Root string `json:"root,omitempty"`
 
 	// CacheDir holds the on-disk write-through cache for generated
-	// markdown. Defaults to "<Root>/.md4agents". Use a path outside Root
-	// if you don't want generated files visible to file_server.
+	// markdown. Defaults to caddy.AppDataDir()/md4agents/<hash> so it
+	// can never be served by file_server.
 	CacheDir string `json:"cache_dir,omitempty"`
 
 	// URLSuffix appended to a path to explicitly request markdown
@@ -49,55 +51,63 @@ type MarkdownForAgents struct {
 	// must be "md" or "markdown". Empty disables query-param negotiation.
 	QueryParam string `json:"query_param,omitempty"`
 
-	// StripTags is a list of HTML tag names to remove entirely from the
-	// conversion (e.g. "nav", "footer", "script", "style"). These are
-	// applied at converter build time and are essentially free.
-	StripTags []string `json:"strip_tags,omitempty"`
-
-	// StripSelectors is a list of simple selectors (#id, .class, tag) to
-	// remove from the DOM before conversion. Heavier than StripTags because
-	// it walks the parsed tree.
+	StripTags      []string `json:"strip_tags,omitempty"`
 	StripSelectors []string `json:"strip_selectors,omitempty"`
-
-	// MainSelector, if set, restricts conversion to the first matching
-	// element. Useful for stripping site chrome around an <article>.
-	MainSelector string `json:"main_selector,omitempty"`
+	MainSelector   string   `json:"main_selector,omitempty"`
 
 	// CacheSize bounds the number of cached markdown responses held in
 	// memory. 0 → 4096.
 	CacheSize int `json:"cache_size,omitempty"`
+
+	// CacheBytes is the total in-memory cache byte budget. 0 → 256 MiB.
+	CacheBytes int64 `json:"cache_bytes,omitempty"`
+
+	// CacheEntryBytes caps the size of a single cached entry, both to
+	// reject pathological pages and to make the byte budget meaningful.
+	// 0 → 1 MiB.
+	CacheEntryBytes int64 `json:"cache_entry_bytes,omitempty"`
 
 	// CacheTTL bounds how long an in-memory cache entry is reused. The
 	// on-disk cache uses mtime-based invalidation and ignores TTL. 0 → no
 	// expiry.
 	CacheTTL caddy.Duration `json:"cache_ttl,omitempty"`
 
-	// MaxBodyBytes limits the size of an upstream HTML response that we'll
-	// attempt to convert in the dynamic (non-Root) path. 0 → 4 MiB.
+	// MaxBodyBytes limits the size of an HTML body we'll attempt to
+	// convert (both static disk reads and dynamic captures). 0 → 4 MiB.
 	MaxBodyBytes int64 `json:"max_body_bytes,omitempty"`
 
 	// ConvertTimeout bounds an individual HTML→MD conversion. 0 → 5s.
-	// Exceeding it returns 503; the conversion continues in the
-	// background and populates the cache for the next request.
 	ConvertTimeout caddy.Duration `json:"convert_timeout,omitempty"`
 
+	// MaxConcurrent caps the number of conversions that can run at once.
+	// 0 → max(4, NumCPU). New requests wait on a buffered semaphore;
+	// hitting the ConvertTimeout while waiting returns 503.
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
+
 	// Pregenerate, when true and Root is set, walks the root at startup
-	// and converts every .html file ahead of the first request. Off by
-	// default — the lazy path is fast enough for most sites.
+	// and converts every .html file ahead of the first request.
 	Pregenerate bool `json:"pregenerate,omitempty"`
 
-	// AllowAuthenticated, when true, allows caching responses for requests
-	// that carry Authorization or Cookie headers. Default false: any such
-	// request bypasses the shared cache to avoid serving one user's
-	// markdown to another. Only enable if you know upstream content is
-	// not user-specific.
+	// AllowAuthenticated, when true, allows caching responses for
+	// requests carrying Authorization or Cookie headers. Default false —
+	// any such request bypasses the shared cache to avoid serving one
+	// user's markdown to another.
 	AllowAuthenticated bool `json:"allow_authenticated,omitempty"`
 
+	// JanitorInterval, when >0 and Root is set, runs a periodic cleanup
+	// of orphaned sidecar files whose source HTML no longer exists.
+	// 0 → off (the lazy mtime check is enough for correctness).
+	JanitorInterval caddy.Duration `json:"janitor_interval,omitempty"`
+
 	// internal state
-	conv  *converter.Converter
-	cache *markdownCache
-	pre   *pregenerator
-	log   *zap.Logger
+	conv          *converter.Converter
+	cache         *markdownCache
+	pre           *pregenerator
+	janitor       *janitor
+	log           *zap.Logger
+	sem           chan struct{}
+	rootResolved  string
+	cacheResolved string
 }
 
 func (MarkdownForAgents) CaddyModule() caddy.ModuleInfo {
@@ -122,24 +132,48 @@ func (m *MarkdownForAgents) Provision(ctx caddy.Context) error {
 	if m.ConvertTimeout == 0 {
 		m.ConvertTimeout = caddy.Duration(5 * time.Second)
 	}
+	if m.MaxConcurrent <= 0 {
+		m.MaxConcurrent = max(4, runtime.NumCPU())
+	}
 	if len(m.StripTags) == 0 {
 		m.StripTags = []string{"script", "style", "noscript", "iframe", "svg"}
 	}
 	if m.Root != "" && m.CacheDir == "" {
-		// Default to Caddy's per-plugin data dir, *outside* Root, so the
-		// sidecar files are never served accidentally by file_server.
-		// Multiple Root configurations on the same Caddy instance get
-		// separate subdirs derived from the absolute root path.
 		m.CacheDir = filepath.Join(caddy.AppDataDir(), "md4agents", safeDirSegment(m.Root))
 	}
 
 	m.conv = m.buildConverter()
+	m.sem = make(chan struct{}, m.MaxConcurrent)
 
-	cache, err := newCache(m.CacheSize, time.Duration(m.CacheTTL))
+	cache, err := newCache(m.CacheSize, time.Duration(m.CacheTTL), m.CacheBytes, m.CacheEntryBytes)
 	if err != nil {
 		return fmt.Errorf("cache: %w", err)
 	}
 	m.cache = cache
+
+	if m.Root != "" {
+		// Resolve symlinks on Root *once* and use the canonicalized path
+		// for every subsequent under-root check. If Root itself doesn't
+		// exist yet (deploy-time race), proceed with the textual path —
+		// the per-request resolver will fail safely.
+		if resolved, err := filepath.EvalSymlinks(m.Root); err == nil {
+			m.rootResolved = resolved
+		} else {
+			abs, _ := filepath.Abs(m.Root)
+			m.rootResolved = abs
+		}
+	}
+	if m.CacheDir != "" {
+		if err := ensureDir(m.CacheDir); err != nil {
+			return fmt.Errorf("cache_dir: %w", err)
+		}
+		if resolved, err := filepath.EvalSymlinks(m.CacheDir); err == nil {
+			m.cacheResolved = resolved
+		} else {
+			abs, _ := filepath.Abs(m.CacheDir)
+			m.cacheResolved = abs
+		}
+	}
 
 	if m.Pregenerate && m.Root != "" {
 		m.pre = newPregenerator(m)
@@ -147,12 +181,19 @@ func (m *MarkdownForAgents) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("pregenerator: %w", err)
 		}
 	}
+	if time.Duration(m.JanitorInterval) > 0 && m.Root != "" && m.CacheDir != "" {
+		m.janitor = newJanitor(m, time.Duration(m.JanitorInterval))
+		m.janitor.start(ctx)
+	}
 	return nil
 }
 
 func (m *MarkdownForAgents) Cleanup() error {
 	if m.pre != nil {
-		return m.pre.stop()
+		_ = m.pre.stop()
+	}
+	if m.janitor != nil {
+		_ = m.janitor.stop()
 	}
 	return nil
 }
@@ -169,8 +210,7 @@ var (
 
 // ServeHTTP dispatches to the static-first path when Root is configured and
 // the request resolves to an HTML file on disk, falling back to the dynamic
-// capture path otherwise. The static path is hot for typical sites; the
-// dynamic path covers reverse_proxy and template handlers.
+// capture path otherwise.
 func (m *MarkdownForAgents) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	wantMD, rewritePath := m.negotiate(r)
 	if !wantMD {
@@ -195,27 +235,15 @@ func (m *MarkdownForAgents) ServeHTTP(w http.ResponseWriter, r *http.Request, ne
 	return m.serveDynamic(w, r, next, logicalPath, rewritePath)
 }
 
-// serveDynamic is the response-capture path: it lets `next` produce HTML,
-// converts the buffered body, caches under the request path+query, and
-// writes markdown back. Used for reverse_proxy, templates, or any case
-// without a resolvable file root.
-//
-// Cache-safety rules:
-//   - Only GET/HEAD are cacheable; everything else converts but never reads
-//     or writes the shared cache.
-//   - Requests with Authorization or Cookie headers bypass the shared cache
-//     by default (override with allow_authenticated). Without this, one
-//     user's authenticated content could be served to another user issuing
-//     a public request for the same URL.
-//   - Upstream responses with Set-Cookie or Cache-Control: private|no-store
-//     are converted and served once but never cached.
+// serveDynamic is the response-capture path. Cache-safety rules are
+// documented on the helper functions below.
 func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, logicalPath, rewritePath string) error {
 	cacheable := m.requestIsCacheable(r)
 	cacheKey := dynamicCacheKey(logicalPath, r.URL.RawQuery)
 
 	if cacheable {
 		if e, ok := m.cache.get(cacheKey); ok {
-			return m.writeMarkdown(w, r, e)
+			return m.writeMarkdown(w, r, e, nil)
 		}
 	}
 
@@ -242,6 +270,10 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 		return newEntry([]byte(md)), nil
 	}
 
+	// Snapshot the upstream headers we want to pass through *before* we
+	// overwrite the response.
+	passthrough := snapshotSafeHeaders(rec.Header())
+
 	var (
 		e   *entry
 		err error
@@ -256,12 +288,10 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 			zap.String("path", cacheKey), zap.Error(err))
 		return rec.flush()
 	}
-	return m.writeMarkdown(w, r, e)
+	return m.writeMarkdown(w, r, e, passthrough)
 }
 
-// requestIsCacheable decides whether the in-memory cache may be read from
-// or written to for this request. Conservative by default — see the
-// AllowAuthenticated option.
+// requestIsCacheable: GET/HEAD only, no Authorization/Cookie by default.
 func (m *MarkdownForAgents) requestIsCacheable(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -275,8 +305,10 @@ func (m *MarkdownForAgents) requestIsCacheable(r *http.Request) bool {
 }
 
 // responseIsCacheable inspects the captured upstream response. We never
-// cache anything carrying user-specific cookies or an explicit private/
-// no-store directive.
+// cache anything carrying Set-Cookie, an explicit private/no-store
+// directive, or a Vary other than the trivial "Accept-Encoding". The
+// last guard prevents serving a French page to an English-asking client
+// when upstream varied by Accept-Language without us knowing.
 func responseIsCacheable(rec *captureWriter) bool {
 	h := rec.Header()
 	if h.Get("Set-Cookie") != "" {
@@ -286,11 +318,18 @@ func responseIsCacheable(rec *captureWriter) bool {
 	if strings.Contains(cc, "private") || strings.Contains(cc, "no-store") {
 		return false
 	}
+	if v := h.Get("Vary"); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			k := strings.TrimSpace(strings.ToLower(part))
+			if k == "" || k == "accept-encoding" {
+				continue
+			}
+			return false
+		}
+	}
 	return true
 }
 
-// dynamicCacheKey includes the raw query so /api?id=1 and /api?id=2 don't
-// collide. Path comes first so logs are still scannable.
 func dynamicCacheKey(path, query string) string {
 	if query == "" {
 		return path
@@ -298,14 +337,21 @@ func dynamicCacheKey(path, query string) string {
 	return path + "?" + query
 }
 
-// convertWithTimeout runs conversion in a goroutine so we can surface a 503
-// to the client if the converter wedges. The goroutine is not killed (Go
-// has no safe way to cancel CPU-bound work) — it keeps running and its
-// result populates the cache for the next request.
+// convertWithTimeout caps both the conversion runtime and the number of
+// concurrent conversions. The semaphore prevents a flood of distinct URLs
+// from spawning unlimited goroutines; the timeout prevents one wedged
+// conversion from blocking everyone else (its goroutine continues so the
+// next request gets a cache hit).
 func (m *MarkdownForAgents) convertWithTimeout(ctx context.Context, htmlBytes []byte) (string, error) {
 	timeout := time.Duration(m.ConvertTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	select {
+	case m.sem <- struct{}{}:
+	case <-ctx.Done():
+		return "", fmt.Errorf("convert: wait for slot: %w", ctx.Err())
+	}
 
 	type result struct {
 		md  string
@@ -313,6 +359,7 @@ func (m *MarkdownForAgents) convertWithTimeout(ctx context.Context, htmlBytes []
 	}
 	done := make(chan result, 1)
 	go func() {
+		defer func() { <-m.sem }()
 		md, err := m.convert(htmlBytes)
 		done <- result{md, err}
 	}()
@@ -325,25 +372,59 @@ func (m *MarkdownForAgents) convertWithTimeout(ctx context.Context, htmlBytes []
 	}
 }
 
-func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request, e *entry) error {
+// safeHeaderAllowlist lists upstream response headers we'll re-emit when
+// we replace an HTML body with markdown. Everything else is dropped so
+// we don't accidentally smuggle Set-Cookie, X-Powered-By, or similar
+// upstream-specific noise into the rewritten response.
+var safeHeaderAllowlist = []string{
+	"Cache-Control",
+	"Expires",
+	"Last-Modified",
+	"Content-Language",
+	"Content-Security-Policy",
+	"Strict-Transport-Security",
+	"X-Frame-Options",
+	"X-Content-Type-Options",
+	"Referrer-Policy",
+	"Permissions-Policy",
+}
+
+func snapshotSafeHeaders(h http.Header) http.Header {
+	out := make(http.Header, len(safeHeaderAllowlist))
+	for _, k := range safeHeaderAllowlist {
+		if v := h.Values(k); len(v) > 0 {
+			out[k] = append([]string(nil), v...)
+		}
+	}
+	return out
+}
+
+func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request, e *entry, upstream http.Header) error {
 	if ifNoneMatchHits(r.Header.Get("If-None-Match"), e.ETag) {
 		w.Header().Set("ETag", e.ETag)
 		w.WriteHeader(http.StatusNotModified)
 		return nil
 	}
 	h := w.Header()
+	for k, vs := range upstream {
+		for _, v := range vs {
+			h.Add(k, v)
+		}
+	}
 	h.Set("Content-Type", "text/markdown; charset=utf-8")
 	h.Set("ETag", e.ETag)
 	h.Set("Vary", "Accept")
 	h.Set("Content-Length", strconv.Itoa(len(e.Markdown)))
 	w.WriteHeader(http.StatusOK)
+	// RFC 9110 §15.3 — HEAD responses MUST NOT include a body.
+	if r.Method == http.MethodHead {
+		return nil
+	}
 	_, err := w.Write(e.Markdown)
 	return err
 }
 
-// ifNoneMatchHits parses an If-None-Match value (RFC 7232 §3.2) and returns
-// true if any tag matches our strong ETag. A `W/` prefix is accepted for
-// weak comparison (which is fine for revalidation). `*` matches any.
+// ifNoneMatchHits parses an If-None-Match value (RFC 7232 §3.2).
 func ifNoneMatchHits(header, etag string) bool {
 	header = strings.TrimSpace(header)
 	if header == "" {
@@ -371,28 +452,18 @@ func newEntry(md []byte) *entry {
 	}
 }
 
-// safeDirSegment turns an absolute filesystem path into a single directory
-// segment safe to use as a sub-path (no slashes, no nul). It uses a short
-// hex prefix of the SHA-256 plus a sanitized tail for human-friendly logs.
+// safeDirSegment turns an absolute path into a deterministic, opaque
+// directory segment. Hash-only — the previous basename suffix could leak
+// portions of admin-controlled paths into shared data dirs.
 func safeDirSegment(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		abs = p
 	}
 	sum := sha256.Sum256([]byte(abs))
-	hash := hex.EncodeToString(sum[:6])
-	tail := filepath.Base(abs)
-	clean := make([]rune, 0, len(tail))
-	for _, r := range tail {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			clean = append(clean, r)
-		default:
-			clean = append(clean, '_')
-		}
-	}
-	if len(clean) == 0 {
-		return hash
-	}
-	return string(clean) + "-" + hash
+	return hex.EncodeToString(sum[:16])
+}
+
+func ensureDir(p string) error {
+	return os.MkdirAll(p, 0o755)
 }

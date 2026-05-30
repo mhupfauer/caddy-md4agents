@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,9 +14,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// errPathEscape is returned by the path resolvers when a candidate path
+// resolves outside Root via symlinks. We treat this as a security signal
+// and short-circuit the request to 404 — without it, file_server would
+// happily follow the same symlink and the dynamic capture path would
+// convert and serve the result, defeating the static-path guard.
+var errPathEscape = errors.New("path escapes root")
+
 // serveStatic implements the static-first lookup. It returns (served=true)
-// when the request was fully handled (success or 304); served=false means
-// the caller should fall back to the dynamic path.
+// when the request was fully handled (success, 304, or refused-as-escape);
+// served=false means the caller should fall back to the dynamic path.
 //
 // Resolution order, given a logical URL path P:
 //  1. ROOT/P stripped of suffix + ".md" (author file) → serve verbatim
@@ -23,13 +31,14 @@ import (
 //  3. ROOT/P stripped of suffix + "/index.html"       → convert / cache / serve
 //  4. miss → served=false
 //
+// Every disk read goes through resolveAndCheck so a malicious symlink under
+// Root can't escape (read), and the sidecar path uses resolveParentAndCheck
+// so write-through can't escape CacheDir either.
+//
 // Caches are keyed by absolute source path + mtime + size, so a source edit
 // implicitly invalidates without an explicit purge.
 func (m *MarkdownForAgents) serveStatic(w http.ResponseWriter, r *http.Request, logicalPath string) (bool, error) {
 	base := logicalPath
-	// logicalPath may already be ".html" (suffix-rewrite path) or carry the
-	// markdown suffix (Accept-header / query path on a .md URL). Strip
-	// either so the candidate lookup below is symmetric.
 	base = strings.TrimSuffix(base, ".html")
 	if m.URLSuffix != "" {
 		base = strings.TrimSuffix(base, m.URLSuffix)
@@ -39,13 +48,18 @@ func (m *MarkdownForAgents) serveStatic(w http.ResponseWriter, r *http.Request, 
 		base = "/"
 	}
 
-	// 1. Author-written .md takes precedence.
-	if author := m.resolveAuthor(base); author != "" {
+	author, err := m.resolveAuthor(base)
+	if err == errPathEscape {
+		return true, m.refuseEscape(w, r, base)
+	}
+	if author != "" {
 		return true, m.serveFile(w, r, author, "author")
 	}
 
-	// 2/3. Find HTML source.
 	htmlPath, err := m.resolveHTML(base)
+	if err == errPathEscape {
+		return true, m.refuseEscape(w, r, base)
+	}
 	if err != nil {
 		return false, nil
 	}
@@ -53,50 +67,81 @@ func (m *MarkdownForAgents) serveStatic(w http.ResponseWriter, r *http.Request, 
 	return true, m.serveGenerated(w, r, htmlPath)
 }
 
-func (m *MarkdownForAgents) resolveAuthor(base string) string {
-	candidate := filepath.Join(m.Root, filepath.FromSlash(base)+".md")
-	if !isUnderRoot(m.Root, candidate) {
-		return ""
+// refuseEscape writes a 404 (deliberately indistinguishable from a true
+// miss, no need to advertise that we caught an escape attempt) and logs
+// the attempt for the operator.
+func (m *MarkdownForAgents) refuseEscape(w http.ResponseWriter, r *http.Request, base string) error {
+	m.log.Warn("refused symlink escape",
+		zap.String("path", r.URL.Path),
+		zap.String("resolved_base", base))
+	http.NotFound(w, r)
+	return nil
+}
+
+// resolveAuthor returns the canonical path of an author-written `.md`
+// file under Root, or "" if none exists. Returns errPathEscape if a
+// candidate exists but resolves outside Root via symlink — the caller
+// must NOT fall through to a downstream handler in that case.
+func (m *MarkdownForAgents) resolveAuthor(base string) (string, error) {
+	for _, candidate := range []string{
+		filepath.Join(m.Root, filepath.FromSlash(base)+".md"),
+		filepath.Join(m.Root, filepath.FromSlash(base), "index.md"),
+	} {
+		real, err := resolveAndCheck(m.rootResolved, candidate)
+		if err != nil {
+			if isEscapeErr(err) {
+				return "", errPathEscape
+			}
+			continue
+		}
+		if st, err := os.Stat(real); err == nil && !st.IsDir() {
+			return real, nil
+		}
 	}
-	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-		return candidate
-	}
-	// /docs/  → /docs/index.md
-	candidate = filepath.Join(m.Root, filepath.FromSlash(base), "index.md")
-	if !isUnderRoot(m.Root, candidate) {
-		return ""
-	}
-	if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-		return candidate
-	}
-	return ""
+	return "", nil
 }
 
 func (m *MarkdownForAgents) resolveHTML(base string) (string, error) {
-	candidates := []string{
+	for _, candidate := range []string{
 		filepath.Join(m.Root, filepath.FromSlash(base)+".html"),
 		filepath.Join(m.Root, filepath.FromSlash(base), "index.html"),
-	}
-	for _, c := range candidates {
-		if !isUnderRoot(m.Root, c) {
+	} {
+		real, err := resolveAndCheck(m.rootResolved, candidate)
+		if err != nil {
+			if isEscapeErr(err) {
+				return "", errPathEscape
+			}
 			continue
 		}
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			return c, nil
+		if st, err := os.Stat(real); err == nil && !st.IsDir() {
+			return real, nil
 		}
 	}
 	return "", errors.New("no html source")
 }
 
+// isEscapeErr distinguishes "this candidate escapes root" from
+// "candidate doesn't exist". EvalSymlinks returns NotExist for missing
+// paths; anything else from our resolveAndCheck is a security signal.
+func isEscapeErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if os.IsNotExist(err) {
+		return false
+	}
+	return strings.Contains(err.Error(), "escapes root")
+}
+
 func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, abs, kind string) error {
-	data, err := os.ReadFile(abs)
+	data, err := readBoundedFile(abs, m.MaxBodyBytes)
 	if err != nil {
 		return err
 	}
 	e := newEntry(data)
 	m.log.Debug("static markdown served",
 		zap.String("file", abs), zap.String("kind", kind))
-	return m.writeMarkdown(w, r, e)
+	return m.writeMarkdown(w, r, e, nil)
 }
 
 // serveGenerated is the lazy-convert + write-through core. The cache key
@@ -104,38 +149,55 @@ func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, ab
 // source change. The disk sidecar is keyed by source mtime alone — if the
 // source is newer than the sidecar, we re-convert and overwrite.
 func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Request, htmlPath string) error {
-	st, err := os.Stat(htmlPath)
+	// Open once and stat from the same file handle to avoid TOCTOU where
+	// the file is swapped between Stat and Read.
+	f, err := os.Open(htmlPath)
 	if err != nil {
 		return err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	if st.Size() > m.MaxBodyBytes {
+		f.Close()
+		return fmt.Errorf("source %s exceeds max_body_bytes (%d > %d)",
+			htmlPath, st.Size(), m.MaxBodyBytes)
 	}
 	key := fmt.Sprintf("%s|%d|%d", htmlPath, st.ModTime().UnixNano(), st.Size())
 
 	e, err := m.cache.do(key, func() (*entry, error) {
-		return m.loadOrGenerate(r.Context(), htmlPath, st)
+		return m.loadOrGenerateFromFile(r.Context(), htmlPath, f, st)
 	})
 	if err != nil {
 		return err
 	}
-	return m.writeMarkdown(w, r, e)
+	return m.writeMarkdown(w, r, e, nil)
 }
 
-// loadOrGenerate is called once per unique (path, mtime, size) tuple, so
-// the disk-read / conversion / disk-write happens at most once per source
-// version even under load.
-func (m *MarkdownForAgents) loadOrGenerate(ctx context.Context, htmlPath string, st os.FileInfo) (*entry, error) {
+// loadOrGenerateFromFile reuses the open file handle to avoid the
+// stat/open TOCTOU. The handle is consumed regardless (read or closed).
+func (m *MarkdownForAgents) loadOrGenerateFromFile(ctx context.Context, htmlPath string, f *os.File, st os.FileInfo) (*entry, error) {
+	defer f.Close()
+
 	sidecar := m.sidecarPath(htmlPath)
 	if sidecar != "" {
 		if sst, err := os.Stat(sidecar); err == nil && !sst.ModTime().Before(st.ModTime()) {
-			if data, err := os.ReadFile(sidecar); err == nil {
+			if data, err := readBoundedFile(sidecar, m.MaxBodyBytes*2); err == nil {
 				return newEntry(data), nil
 			}
 		}
 	}
 
-	htmlBytes, err := os.ReadFile(htmlPath)
+	htmlBytes, err := io.ReadAll(io.LimitReader(f, m.MaxBodyBytes+1))
 	if err != nil {
 		return nil, err
 	}
+	if int64(len(htmlBytes)) > m.MaxBodyBytes {
+		return nil, fmt.Errorf("source %s exceeds max_body_bytes during read", htmlPath)
+	}
+
 	md, err := m.convertWithTimeout(ctx, htmlBytes)
 	if err != nil {
 		return nil, fmt.Errorf("convert %s: %w", htmlPath, err)
@@ -151,8 +213,30 @@ func (m *MarkdownForAgents) loadOrGenerate(ctx context.Context, htmlPath string,
 	return newEntry(mdBytes), nil
 }
 
+// loadOrGenerate is the legacy stat-path entry used by the pregenerator,
+// which doesn't already hold an open handle.
+func (m *MarkdownForAgents) loadOrGenerate(ctx context.Context, htmlPath string, st os.FileInfo) (*entry, error) {
+	f, err := os.Open(htmlPath)
+	if err != nil {
+		return nil, err
+	}
+	// Re-stat from fd in case anything raced.
+	st2, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st2.Size() > m.MaxBodyBytes {
+		f.Close()
+		return nil, fmt.Errorf("source %s exceeds max_body_bytes (%d > %d)",
+			htmlPath, st2.Size(), m.MaxBodyBytes)
+	}
+	return m.loadOrGenerateFromFile(ctx, htmlPath, f, st2)
+}
+
 // sidecarPath maps a source HTML path to its on-disk markdown cache file.
-// Returns "" if no cache dir is configured.
+// Returns "" if no cache dir is configured, or if the would-be sidecar
+// path escapes CacheDir via symlinks.
 //
 //	ROOT/docs/about.html  →  CACHE/docs/about.html.md
 //
@@ -162,11 +246,37 @@ func (m *MarkdownForAgents) sidecarPath(htmlPath string) string {
 	if m.CacheDir == "" {
 		return ""
 	}
-	rel, err := filepath.Rel(m.Root, htmlPath)
+	rel, err := filepath.Rel(m.rootResolved, htmlPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	candidate := filepath.Join(m.cacheResolved, rel+".md")
+	final, err := resolveParentAndCheck(m.cacheResolved, candidate)
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(m.CacheDir, rel+".md")
+	return final
+}
+
+// readBoundedFile reads at most cap+1 bytes via LimitReader so a runaway
+// file can't OOM the process. Returns an error if the file exceeds cap.
+func readBoundedFile(path string, cap int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if cap <= 0 {
+		cap = 4 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(f, cap+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > cap {
+		return nil, fmt.Errorf("file %s exceeds limit %d", path, cap)
+	}
+	return data, nil
 }
 
 func writeAtomic(dst string, data []byte, mtime time.Time) error {
@@ -187,27 +297,6 @@ func writeAtomic(dst string, data []byte, mtime time.Time) error {
 		os.Remove(tmpName)
 		return err
 	}
-	// Match source mtime so the freshness check (sidecar >= source) holds.
 	_ = os.Chtimes(tmpName, mtime, mtime)
 	return os.Rename(tmpName, dst)
 }
-
-// isUnderRoot rejects path-traversal attempts. Caddy normalizes URLs but a
-// custom rewrite or matcher could still construct something exotic, so we
-// belt-and-braces it.
-func isUnderRoot(root, candidate string) bool {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return false
-	}
-	absCandidate, err := filepath.Abs(candidate)
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(absRoot, absCandidate)
-	if err != nil {
-		return false
-	}
-	return !strings.HasPrefix(rel, "..")
-}
-

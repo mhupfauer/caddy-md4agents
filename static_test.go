@@ -19,11 +19,25 @@ func newTestModule(t *testing.T, root string) *MarkdownForAgents {
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		ConvertTimeout: caddy.Duration(5 * time.Second),
 	}
-	cache, err := newCache(64, 0)
+	cache, err := newCache(64, 0, 64<<20, 8<<20)
 	if err != nil {
 		t.Fatalf("cache: %v", err)
 	}
 	m.cache = cache
+	m.sem = make(chan struct{}, 4)
+	m.MaxBodyBytes = 4 << 20
+	if abs, err := filepath.EvalSymlinks(root); err == nil {
+		m.rootResolved = abs
+	}
+	if abs, err := filepath.EvalSymlinks(m.CacheDir); err == nil {
+		m.cacheResolved = abs
+	} else if abs, err := filepath.Abs(m.CacheDir); err == nil {
+		m.cacheResolved = abs
+		_ = ensureDir(m.cacheResolved)
+		if r, err := filepath.EvalSymlinks(m.cacheResolved); err == nil {
+			m.cacheResolved = r
+		}
+	}
 	m.log = zap.NewNop()
 	m.URLSuffix = ".md"
 	m.QueryParam = "format"
@@ -99,7 +113,7 @@ func TestServeStaticSidecarReusedUntilSourceChanges(t *testing.T) {
 	bumpMtime(t, sidecar, time.Now().Add(time.Hour))
 
 	// Drop in-memory cache so the resolver has to hit disk.
-	m.cache, _ = newCache(64, 0)
+	m.cache, _ = newCache(64, 0, 64<<20, 8<<20)
 
 	rec2 := httptest.NewRecorder()
 	if _, err := m.serveStatic(rec2, req, "/page.html"); err != nil {
@@ -112,7 +126,7 @@ func TestServeStaticSidecarReusedUntilSourceChanges(t *testing.T) {
 	// Now bump source mtime past sidecar — resolver should re-convert and
 	// overwrite. Use the real "v1" body so we know conversion ran.
 	bumpMtime(t, srcPath, time.Now().Add(2*time.Hour))
-	m.cache, _ = newCache(64, 0)
+	m.cache, _ = newCache(64, 0, 64<<20, 8<<20)
 
 	rec3 := httptest.NewRecorder()
 	if _, err := m.serveStatic(rec3, req, "/page.html"); err != nil {
