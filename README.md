@@ -4,6 +4,7 @@
 [![Docker](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml)
 [![codecov](https://codecov.io/gh/mhupfauer/caddy-md4agents/branch/main/graph/badge.svg)](https://codecov.io/gh/mhupfauer/caddy-md4agents)
 [![CodeQL](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/github-code-scanning/codeql/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/security/code-scanning)
+[![Snyk](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/snyk.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/snyk.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/mhupfauer/caddy-md4agents)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mhupfauer/caddy-md4agents)](https://goreportcard.com/report/github.com/mhupfauer/caddy-md4agents)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -248,6 +249,24 @@ convention to confuse with author Markdown.
   one execution, preventing thundering-herd cost on a cold cache.
 - The hot path on a warmed cache is a `stat()` + map lookup + write — no
   parsing, no allocations beyond the response itself.
+
+## Security
+
+Two scanners run on every push and weekly on a cron:
+
+- **CodeQL** (GitHub native) — Go SAST + dependency scanning. Findings
+  appear under the repo's Security → Code scanning tab.
+- **Snyk** — SAST (Snyk Code → SARIF → GitHub Code Scanning), SCA
+  (`snyk monitor --all-projects`), Infrastructure-as-Code, and Container
+  scans against the built Docker image.
+
+Snyk needs a `SNYK_TOKEN` repo secret (free Snyk account → API token →
+GitHub Settings → Secrets → `SNYK_TOKEN`). When the token is missing
+the workflow short-circuits in its preflight job so PRs and the initial
+setup window don't fail noisily.
+
+Vulnerabilities can also be reported privately via
+[GitHub Security Advisories](https://github.com/mhupfauer/caddy-md4agents/security/advisories/new).
 
 ## License
 

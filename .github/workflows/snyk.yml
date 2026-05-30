@@ -1,0 +1,79 @@
+name: snyk
+
+# Snyk SAST (Code), SCA (Open Source), IaC, and Container scans. SARIF
+# from Snyk Code is uploaded to GitHub Code Scanning. To activate:
+#
+#   1. Create a free Snyk account at https://snyk.io
+#   2. Get an API token (Account Settings → General → Auth Token)
+#   3. Add it as repo secret `SNYK_TOKEN` (Settings → Secrets → Actions)
+#
+# The workflow detects a missing token and skips with a no-op so PRs
+# from forks (and the initial setup window) don't fail noisily.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly Sunday 07:23 UTC — catches new advisories on unchanged deps.
+    - cron: '23 7 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snyk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      has_token: ${{ steps.check.outputs.has_token }}
+    steps:
+      - id: check
+        env:
+          TOKEN_PRESENT: ${{ secrets.SNYK_TOKEN != '' }}
+        run: echo "has_token=${TOKEN_PRESENT}" >> "${GITHUB_OUTPUT}"
+
+  snyk:
+    needs: preflight
+    if: needs.preflight.outputs.has_token == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      IMAGE: caddy-md4agents:snyk
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
+
+      - name: Snyk Code (SAST) → SARIF
+        # Allow non-zero exit so we still upload the SARIF for visibility;
+        # GH Code Scanning will surface findings either way.
+        run: snyk code test --sarif > snyk-code.sarif || true
+
+      - name: Upload Snyk Code SARIF to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+      - name: Snyk Open Source (SCA)
+        run: snyk monitor --all-projects
+
+      - name: Snyk IaC
+        run: snyk iac test --report || true
+
+      - name: Build local image for container scan
+        run: docker build -t "$IMAGE" .
+
+      - name: Snyk Container
+        run: snyk container monitor "$IMAGE" --file=Dockerfile
