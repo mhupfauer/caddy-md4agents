@@ -1,38 +1,34 @@
 # syntax=docker/dockerfile:1.7
 
-# Pin Caddy version at build time. Defaults to `latest` (i.e. whatever
-# the upstream Caddy team is shipping); CI rebuilds on the daily cron
-# so this image follows upstream automatically.
-ARG CADDY_VERSION=latest
+# The Caddy team publishes `caddy:builder` (latest builder) and
+# `caddy:<v>-builder` (versioned). There is no `caddy:latest-builder`
+# tag, so we keep two separate args. Override both to pin a release.
+ARG CADDY_BUILDER_TAG=builder
+ARG CADDY_RUNTIME_TAG=latest
 
 # ----- build stage -----------------------------------------------------------
-FROM caddy:${CADDY_VERSION}-builder AS builder
+FROM caddy:${CADDY_BUILDER_TAG} AS builder
 
-# Bring our plugin source into the build context so xcaddy can resolve
-# the local module instead of fetching from a public git ref. This makes
-# CI builds verify the *current* commit, not whatever is at HEAD of main.
 WORKDIR /src
 COPY . .
 
-# xcaddy: compose Caddy with our handler. The =/src tells xcaddy to use
-# the local module path (a go.mod replace under the hood) so we link
-# against this checkout instead of going through `go get`.
+# xcaddy: compose Caddy with our handler against the local module path,
+# so CI builds verify the *current* commit instead of fetching from a
+# public git ref that might be racing this PR.
 RUN xcaddy build \
     --with github.com/mhupfauer/caddy-md4agents=/src \
     --output /out/caddy
 
 # Smoke test inside the builder so a regression aborts the build before
-# we publish the runtime image.
+# we ever publish the runtime image.
 RUN /out/caddy version \
  && /out/caddy list-modules | grep -q '^http.handlers.markdown_for_agents$'
 
 # ----- runtime stage ---------------------------------------------------------
-FROM caddy:${CADDY_VERSION}
+FROM caddy:${CADDY_RUNTIME_TAG}
 
 COPY --from=builder /out/caddy /usr/bin/caddy
 
-# Default Caddyfile lives at /etc/caddy/Caddyfile (Caddy convention).
-# Override at runtime with `-v ./Caddyfile:/etc/caddy/Caddyfile:ro`.
 EXPOSE 80 443 443/udp
 
 LABEL org.opencontainers.image.title="caddy-md4agents" \

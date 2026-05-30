@@ -265,4 +265,3 @@ func bumpMtime(t *testing.T, path string, when time.Time) {
 		t.Fatal(err)
 	}
 }
-

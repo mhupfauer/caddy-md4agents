@@ -9,11 +9,11 @@ func TestRequestIsCacheable(t *testing.T) {
 	m := &MarkdownForAgents{}
 
 	cases := []struct {
-		name     string
-		method   string
-		headers  map[string]string
+		name      string
+		method    string
+		headers   map[string]string
 		allowAuth bool
-		want     bool
+		want      bool
 	}{
 		{"GET no auth", "GET", nil, false, true},
 		{"HEAD no auth", "HEAD", nil, false, true},

@@ -256,4 +256,3 @@ func TestPregeneratorContextCancellation(t *testing.T) {
 		t.Fatal("expected no sidecar after cancellation, but it was written")
 	}
 }
-

@@ -543,7 +543,6 @@ func setMergedVary(h http.Header, stored http.Header) {
 	h.Set("Vary", strings.Join(out, ", "))
 }
 
-
 // ifNoneMatchHits parses an If-None-Match value (RFC 7232 §3.2).
 func ifNoneMatchHits(header, etag string) bool {
 	header = strings.TrimSpace(header)

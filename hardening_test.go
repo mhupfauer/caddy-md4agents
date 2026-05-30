@@ -146,9 +146,9 @@ func TestSnapshotSafeHeaders(t *testing.T) {
 	in := http.Header{}
 	in.Set("Cache-Control", "public, max-age=60")
 	in.Set("Content-Security-Policy", "default-src 'self'")
-	in.Set("Set-Cookie", "session=abc")          // must not pass through
-	in.Set("X-Powered-By", "secret-framework")   // must not pass through
-	in.Set("Server", "internal/1.0")             // must not pass through
+	in.Set("Set-Cookie", "session=abc")        // must not pass through
+	in.Set("X-Powered-By", "secret-framework") // must not pass through
+	in.Set("Server", "internal/1.0")           // must not pass through
 
 	out := snapshotSafeHeaders(in)
 	if out.Get("Cache-Control") != "public, max-age=60" {
