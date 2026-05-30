@@ -1,5 +1,14 @@
 # caddy-md4agents
 
+[![CI](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/ci.yml)
+[![Docker](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml)
+[![codecov](https://codecov.io/gh/mhupfauer/caddy-md4agents/branch/main/graph/badge.svg)](https://codecov.io/gh/mhupfauer/caddy-md4agents)
+[![CodeQL](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/github-code-scanning/codeql/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/security/code-scanning)
+[![Go version](https://img.shields.io/github/go-mod/go-version/mhupfauer/caddy-md4agents)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mhupfauer/caddy-md4agents)](https://goreportcard.com/report/github.com/mhupfauer/caddy-md4agents)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Container](https://img.shields.io/badge/ghcr.io-mhupfauer%2Fcaddy--md4agents-2496ed?logo=docker&logoColor=white)](https://github.com/users/mhupfauer/packages/container/package/caddy-md4agents)
+
 A [Caddy v2](https://caddyserver.com/) HTTP middleware that serves a Markdown
 rendition of HTML pages when a client (typically an AI agent) negotiates for
 it. It implements Cloudflare's [Markdown for Agents](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/)

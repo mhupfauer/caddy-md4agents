@@ -48,13 +48,21 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
-      - name: upload coverage
+      - name: upload coverage artifact
         if: matrix.go == '1.26'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: coverage.out
           retention-days: 7
+
+      - name: upload coverage to Codecov
+        if: matrix.go == '1.26'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          flags: unittests
+          fail_ci_if_error: false
 
   build:
     name: xcaddy build
