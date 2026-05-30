@@ -60,14 +60,19 @@ jobs:
       # a failed job. Real failures (auth, network, missing tool) still
       # surface via the upload step's missing-file error.
 
+      # All scan steps tolerate non-zero exit codes — `snyk test`
+      # returns 1 whenever it finds anything, and we want the SARIF.
+      # If Snyk's API is temporarily down (SNYK-9999), no SARIF gets
+      # written and the matching upload step is skipped via hashFiles.
+      #
+      # IaC scan is intentionally omitted: this repo has no Terraform /
+      # k8s / CloudFormation files; the CLI fails with SNYK-CLI-0012.
+
       - name: Snyk Code (SAST)
         run: snyk code test --sarif-file-output=snyk-code.sarif || true
 
       - name: Snyk Open Source (SCA)
         run: snyk test --all-projects --sarif-file-output=snyk-oss.sarif || true
-
-      - name: Snyk IaC
-        run: snyk iac test --sarif-file-output=snyk-iac.sarif . || true
 
       - name: Build local image for container scan
         run: docker build -t "$IMAGE" .
@@ -75,16 +80,28 @@ jobs:
       - name: Snyk Container
         run: snyk container test "$IMAGE" --file=Dockerfile --sarif-file-output=snyk-container.sarif || true
 
-      # Snyk also keeps a dashboard view at app.snyk.io; push a snapshot
-      # of each so historical drift is visible there too. `monitor` is
-      # fire-and-forget and shouldn't fail the workflow.
+      # Snyk container SARIF sometimes lists rules with a null
+      # `security-severity` property. GitHub Code Scanning's SARIF
+      # validator rejects the whole file with "invalid security
+      # severity value, is not a number: null". Patch null → "0" so
+      # the file is accepted; the per-rule severity in `level` is
+      # preserved either way.
+      - name: Patch null security-severity in container SARIF
+        if: hashFiles('snyk-container.sarif') != ''
+        run: |
+          jq '(.runs[].tool.driver.rules[]?.properties."security-severity") |= (if . == null then "0" else . end)' \
+            snyk-container.sarif > snyk-container.fixed.sarif
+          mv snyk-container.fixed.sarif snyk-container.sarif
+
+      # Push a dashboard snapshot in parallel so app.snyk.io stays
+      # current too. Fire-and-forget; never fails the workflow.
       - name: Snyk dashboard snapshots
         run: |
           snyk monitor --all-projects || true
           snyk container monitor "$IMAGE" --file=Dockerfile || true
 
-      # Each SARIF gets its own `category` so GitHub Code Scanning shows
-      # them as independent tool runs and doesn't dedupe across them.
+      # Each SARIF gets its own `category` so GitHub Code Scanning
+      # shows them as independent tool runs and doesn't dedupe across.
       - name: Upload Snyk Code SARIF
         if: always() && hashFiles('snyk-code.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
@@ -98,13 +115,6 @@ jobs:
         with:
           sarif_file: snyk-oss.sarif
           category: snyk-oss
-
-      - name: Upload Snyk IaC SARIF
-        if: always() && hashFiles('snyk-iac.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-iac.sarif
-          category: snyk-iac
 
       - name: Upload Snyk Container SARIF
         if: always() && hashFiles('snyk-container.sarif') != ''
