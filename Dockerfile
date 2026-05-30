@@ -13,6 +13,10 @@ ARG XCADDY_VERSION=v0.4.5
 # ----- build stage -----------------------------------------------------------
 FROM golang:${GO_BUILDER_TAG} AS builder
 
+# Re-declare so the global default is visible inside RUN (Dockerfile ARGs
+# defined before the first FROM are only usable in FROM lines themselves).
+ARG XCADDY_VERSION
+
 # git is required by `go install` / xcaddy to fetch module sources.
 RUN apk add --no-cache git ca-certificates
 
