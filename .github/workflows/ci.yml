@@ -76,7 +76,9 @@ jobs:
           cache: true
 
       - name: install xcaddy
-        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+        # Pinned to match Dockerfile so CI verifies the same xcaddy that
+        # ships in the published image.
+        run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
 
       - name: xcaddy build with local plugin
         run: |

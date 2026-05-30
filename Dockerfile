@@ -6,6 +6,9 @@
 # caddy image; override either tag to pin a release.
 ARG GO_BUILDER_TAG=1.26-alpine
 ARG CADDY_RUNTIME_TAG=latest
+# Pinned to a tagged xcaddy release so `go install` resolves the version
+# through Go's checksum database (sumdb) and the build is reproducible.
+ARG XCADDY_VERSION=v0.4.5
 
 # ----- build stage -----------------------------------------------------------
 FROM golang:${GO_BUILDER_TAG} AS builder
@@ -14,7 +17,7 @@ FROM golang:${GO_BUILDER_TAG} AS builder
 RUN apk add --no-cache git ca-certificates
 
 # Install xcaddy into $GOPATH/bin (on PATH in the golang image).
-RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
 
 WORKDIR /src
 COPY . .
