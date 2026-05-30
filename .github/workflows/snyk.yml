@@ -89,9 +89,15 @@ jobs:
       - name: Patch null security-severity in container SARIF
         if: hashFiles('snyk-container.sarif') != ''
         run: |
-          jq '(.runs[].tool.driver.rules[]?.properties."security-severity") |= (if . == null then "0" else . end)' \
+          # Recursively walk the entire SARIF and replace any null
+          # "security-severity" property with "0". Snyk container
+          # output puts these in tool.driver.rules[].properties AND
+          # in nested extensions/taxonomies; a targeted path doesn't
+          # cover them all.
+          jq 'walk(if type == "object" and has("security-severity") and ."security-severity" == null then ."security-severity" = "0" else . end)' \
             snyk-container.sarif > snyk-container.fixed.sarif
           mv snyk-container.fixed.sarif snyk-container.sarif
+          echo "remaining nulls: $(jq '[.. | objects | select(has("security-severity")) | .["security-severity"]] | map(select(. == null)) | length' snyk-container.sarif)"
 
       # Push a dashboard snapshot in parallel so app.snyk.io stays
       # current too. Fire-and-forget; never fails the workflow.
