@@ -148,27 +148,41 @@ func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, ab
 // embeds source mtime + size so the in-memory cache is auto-invalidated on
 // source change. The disk sidecar is keyed by source mtime alone — if the
 // source is newer than the sidecar, we re-convert and overwrite.
+//
+// We stat the source first (cheap, hits the FS cache after the first
+// request) to derive the cache key, *then* open the file only if we'll
+// actually do work. Opening before the cache lookup would leak the fd on
+// every cache hit because `cache.do` skips the callback (and its defer
+// close) on hit.
 func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Request, htmlPath string) error {
-	// Open once and stat from the same file handle to avoid TOCTOU where
-	// the file is swapped between Stat and Read.
-	f, err := os.Open(htmlPath)
+	st, err := os.Stat(htmlPath)
 	if err != nil {
-		return err
-	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
 		return err
 	}
 	if st.Size() > m.MaxBodyBytes {
-		f.Close()
 		return fmt.Errorf("source %s exceeds max_body_bytes (%d > %d)",
 			htmlPath, st.Size(), m.MaxBodyBytes)
 	}
 	key := fmt.Sprintf("%s|%d|%d", htmlPath, st.ModTime().UnixNano(), st.Size())
 
 	e, err := m.cache.do(key, func() (*entry, error) {
-		return m.loadOrGenerateFromFile(r.Context(), htmlPath, f, st)
+		f, err := os.Open(htmlPath)
+		if err != nil {
+			return nil, err
+		}
+		// Re-stat from fd to close the TOCTOU window. If the source raced
+		// out from under us between Stat and Open, refuse rather than
+		// cache stale content under a now-wrong key.
+		st2, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		if st2.ModTime() != st.ModTime() || st2.Size() != st.Size() {
+			f.Close()
+			return nil, fmt.Errorf("source %s changed during open", htmlPath)
+		}
+		return m.loadOrGenerateFromFile(r.Context(), htmlPath, f, st2)
 	})
 	if err != nil {
 		return err

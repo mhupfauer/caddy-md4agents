@@ -33,9 +33,13 @@ func (m *MarkdownForAgents) negotiate(r *http.Request) (bool, string) {
 	return false, ""
 }
 
-// preferMarkdown returns true if the Accept header expresses a preference for
-// text/markdown over text/html. Wildcards (text/*, */*) don't count as a
-// preference for markdown — the client must explicitly ask for it.
+// preferMarkdown returns true if the Accept header expresses a preference
+// for text/markdown over text/html. Wildcards (text/*, */*) don't count
+// as a preference for markdown — the client must explicitly ask for it.
+//
+// Per RFC 7231 §5.3.1, q=0 means "not acceptable" — we honor that and
+// refuse to serve markdown when the client explicitly disclaimed it,
+// even if no other media type is listed.
 func preferMarkdown(accept string) bool {
 	var (
 		mdQ   float64 = -1
@@ -54,7 +58,7 @@ func preferMarkdown(accept string) bool {
 			}
 		}
 	}
-	if mdQ < 0 {
+	if mdQ <= 0 {
 		return false
 	}
 	if htmlQ < 0 {

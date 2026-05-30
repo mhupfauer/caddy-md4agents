@@ -238,10 +238,10 @@ func (m *MarkdownForAgents) ServeHTTP(w http.ResponseWriter, r *http.Request, ne
 // serveDynamic is the response-capture path. Cache-safety rules are
 // documented on the helper functions below.
 func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, logicalPath, rewritePath string) error {
-	cacheable := m.requestIsCacheable(r)
-	cacheKey := dynamicCacheKey(logicalPath, r.URL.RawQuery)
+	canRead, canWrite := m.cacheCapability(r)
+	cacheKey := dynamicCacheKey(r.Host, logicalPath, r.URL.RawQuery)
 
-	if cacheable {
+	if canRead {
 		if e, ok := m.cache.get(cacheKey); ok {
 			return m.writeMarkdown(w, r, e, nil)
 		}
@@ -278,7 +278,7 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 		e   *entry
 		err error
 	)
-	if cacheable && responseIsCacheable(rec) {
+	if canWrite && responseIsCacheable(rec) {
 		e, err = m.cache.do(cacheKey, convert)
 	} else {
 		e, err = convert()
@@ -291,17 +291,32 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 	return m.writeMarkdown(w, r, e, passthrough)
 }
 
-// requestIsCacheable: GET/HEAD only, no Authorization/Cookie by default.
-func (m *MarkdownForAgents) requestIsCacheable(r *http.Request) bool {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		return false
+// cacheCapability returns (canRead, canWrite). HEAD may *read* a cache
+// entry primed by an earlier GET (the headers are correct, the body is
+// suppressed in writeMarkdown), but HEAD must NOT *write* — upstreams
+// often return an empty body for HEAD per RFC 9110 §15.4 and we'd cache
+// empty markdown under the GET key.
+func (m *MarkdownForAgents) cacheCapability(r *http.Request) (canRead, canWrite bool) {
+	switch r.Method {
+	case http.MethodGet:
+		canRead, canWrite = true, true
+	case http.MethodHead:
+		canRead, canWrite = true, false
+	default:
+		return false, false
 	}
 	if !m.AllowAuthenticated {
 		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-			return false
+			return false, false
 		}
 	}
-	return true
+	return
+}
+
+// requestIsCacheable is retained for tests; returns canRead.
+func (m *MarkdownForAgents) requestIsCacheable(r *http.Request) bool {
+	cr, _ := m.cacheCapability(r)
+	return cr
 }
 
 // responseIsCacheable inspects the captured upstream response. We never
@@ -315,7 +330,8 @@ func responseIsCacheable(rec *captureWriter) bool {
 		return false
 	}
 	cc := strings.ToLower(h.Get("Cache-Control"))
-	if strings.Contains(cc, "private") || strings.Contains(cc, "no-store") {
+	if hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-store") ||
+		hasCacheDirective(cc, "no-cache") || hasCacheDirective(cc, "must-revalidate") {
 		return false
 	}
 	if v := h.Get("Vary"); v != "" {
@@ -330,11 +346,30 @@ func responseIsCacheable(rec *captureWriter) bool {
 	return true
 }
 
-func dynamicCacheKey(path, query string) string {
+// dynamicCacheKey includes Host to avoid cross-tenant leakage when the
+// same module instance handles multiple vhosts.
+func dynamicCacheKey(host, path, query string) string {
 	if query == "" {
-		return path
+		return host + "|" + path
 	}
-	return path + "?" + query
+	return host + "|" + path + "?" + query
+}
+
+// hasCacheDirective does a token-aware lookup in a comma-separated
+// Cache-Control value. Avoids the substring trap where "no-cache-mode"
+// would match "no-cache".
+func hasCacheDirective(cc, want string) bool {
+	for _, tok := range strings.Split(cc, ",") {
+		tok = strings.TrimSpace(tok)
+		// strip "=value" if present (e.g. max-age=60).
+		if i := strings.IndexByte(tok, '='); i >= 0 {
+			tok = tok[:i]
+		}
+		if tok == want {
+			return true
+		}
+	}
+	return false
 }
 
 // convertWithTimeout caps both the conversion runtime and the number of
@@ -401,7 +436,16 @@ func snapshotSafeHeaders(h http.Header) http.Header {
 
 func (m *MarkdownForAgents) writeMarkdown(w http.ResponseWriter, r *http.Request, e *entry, upstream http.Header) error {
 	if ifNoneMatchHits(r.Header.Get("If-None-Match"), e.ETag) {
-		w.Header().Set("ETag", e.ETag)
+		// 304 must still carry the cache-relevant headers so downstream
+		// caches can apply them. RFC 7232 §4.1.
+		h := w.Header()
+		h.Set("ETag", e.ETag)
+		h.Set("Vary", "Accept")
+		for _, k := range []string{"Cache-Control", "Expires", "Content-Language"} {
+			if v := upstream.Get(k); v != "" {
+				h.Set(k, v)
+			}
+		}
 		w.WriteHeader(http.StatusNotModified)
 		return nil
 	}

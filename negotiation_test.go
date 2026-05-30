@@ -19,6 +19,8 @@ func TestPreferMarkdown(t *testing.T) {
 		{"", false},
 		{"text/x-markdown", true},
 		{"application/json", false},
+		{"text/markdown;q=0", false},
+		{"text/markdown;q=0, text/html", false},
 	}
 	for _, c := range cases {
 		if got := preferMarkdown(c.accept); got != c.want {

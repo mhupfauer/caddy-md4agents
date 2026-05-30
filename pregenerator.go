@@ -89,12 +89,21 @@ func (p *pregenerator) run(ctx context.Context) {
 }
 
 func (p *pregenerator) process(htmlPath string) {
-	st, err := os.Stat(htmlPath)
+	// Walk reports a file's path as-listed; resolve and re-check it under
+	// rootResolved so a malicious symlink in the tree can't get its
+	// target pregenerated and cached.
+	real, err := resolveAndCheck(p.m.rootResolved, htmlPath)
 	if err != nil {
+		p.m.log.Debug("pregeneration: skipping unsafe path",
+			zap.String("file", htmlPath), zap.Error(err))
 		return
 	}
-	if _, err := p.m.loadOrGenerate(context.Background(), htmlPath, st); err != nil {
+	st, err := os.Stat(real)
+	if err != nil || st.IsDir() {
+		return
+	}
+	if _, err := p.m.loadOrGenerate(context.Background(), real, st); err != nil {
 		p.m.log.Warn("pregeneration failed",
-			zap.String("file", htmlPath), zap.Error(err))
+			zap.String("file", real), zap.Error(err))
 	}
 }

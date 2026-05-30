@@ -55,6 +55,9 @@ func TestResponseIsCacheable(t *testing.T) {
 		{"cache-control private", map[string]string{"Cache-Control": "private, max-age=0"}, false},
 		{"cache-control no-store", map[string]string{"Cache-Control": "no-store"}, false},
 		{"cache-control public", map[string]string{"Cache-Control": "public, max-age=600"}, true},
+		{"cache-control no-cache", map[string]string{"Cache-Control": "no-cache"}, false},
+		{"cache-control must-revalidate", map[string]string{"Cache-Control": "max-age=0, must-revalidate"}, false},
+		{"cache-control substring trap", map[string]string{"Cache-Control": "no-cache-mode"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -65,16 +68,17 @@ func TestResponseIsCacheable(t *testing.T) {
 	}
 }
 
-func TestDynamicCacheKeyIncludesQuery(t *testing.T) {
-	a := dynamicCacheKey("/api/p", "id=1")
-	b := dynamicCacheKey("/api/p", "id=2")
+func TestDynamicCacheKeyIncludesQueryAndHost(t *testing.T) {
+	a := dynamicCacheKey("alpha.example", "/api/p", "id=1")
+	b := dynamicCacheKey("alpha.example", "/api/p", "id=2")
+	c := dynamicCacheKey("beta.example", "/api/p", "id=1")
 	if a == b {
 		t.Fatalf("keys must differ on query: %q == %q", a, b)
 	}
-	if want := "/api/p?id=1"; a != want {
-		t.Fatalf("got %q, want %q", a, want)
+	if a == c {
+		t.Fatalf("keys must differ on host: %q == %q", a, c)
 	}
-	if got := dynamicCacheKey("/api/p", ""); got != "/api/p" {
+	if got := dynamicCacheKey("alpha.example", "/api/p", ""); got != "alpha.example|/api/p" {
 		t.Fatalf("no query: got %q", got)
 	}
 }
