@@ -89,15 +89,26 @@ jobs:
       - name: Patch null security-severity in container SARIF
         if: hashFiles('snyk-container.sarif') != ''
         run: |
-          # Recursively walk the entire SARIF and replace any null
-          # "security-severity" property with "0". Snyk container
-          # output puts these in tool.driver.rules[].properties AND
-          # in nested extensions/taxonomies; a targeted path doesn't
-          # cover them all.
-          jq 'walk(if type == "object" and has("security-severity") and ."security-severity" == null then ."security-severity" = "0" else . end)' \
-            snyk-container.sarif > snyk-container.fixed.sarif
+          # Snyk container emits `"security-severity": "null"` (a
+          # four-character string, NOT JSON null) when an advisory
+          # has no CVSS score. GitHub Code Scanning's SARIF validator
+          # rejects the entire file with "is not a number: null".
+          # Walk every object and rewrite both forms (JSON null and
+          # the literal "null") to "0". `level` carries the
+          # per-finding severity classification independently.
+          jq 'walk(
+                if type == "object" and has("security-severity")
+                   and (.["security-severity"] == null or .["security-severity"] == "null")
+                then .["security-severity"] = "0"
+                else .
+                end
+              )' snyk-container.sarif > snyk-container.fixed.sarif
           mv snyk-container.fixed.sarif snyk-container.sarif
-          echo "remaining nulls: $(jq '[.. | objects | select(has("security-severity")) | .["security-severity"]] | map(select(. == null)) | length' snyk-container.sarif)"
+          bad=$(jq '[.. | objects | select(has("security-severity"))
+                       | .["security-severity"]]
+                     | map(select(. == null or . == "null")) | length' \
+                    snyk-container.sarif)
+          echo "remaining bad security-severity values: $bad"
 
       # Push a dashboard snapshot in parallel so app.snyk.io stays
       # current too. Fire-and-forget; never fails the workflow.
