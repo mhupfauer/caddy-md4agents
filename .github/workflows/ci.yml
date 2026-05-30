@@ -18,7 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go: ['1.22', '1.25']
+        # go.mod requires Go 1.25 (transitively via caddy/v2). Test the
+        # minimum and the current stable. Older Go versions fail at
+        # `go vet` with "go.mod requires go >= 1.25.0".
+        go: ['1.25', '1.26']
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +49,7 @@ jobs:
         run: go tool cover -func=coverage.out | tail -1
 
       - name: upload coverage
-        if: matrix.go == '1.25'
+        if: matrix.go == '1.26'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
@@ -61,7 +64,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: install xcaddy
