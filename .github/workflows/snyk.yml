@@ -55,25 +55,60 @@ jobs:
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
 
-      - name: Snyk Code (SAST) → SARIF
-        # Allow non-zero exit so we still upload the SARIF for visibility;
-        # GH Code Scanning will surface findings either way.
-        run: snyk code test --sarif > snyk-code.sarif || true
+      # All four scan steps tolerate non-zero exit codes — `snyk test`
+      # returns 1 whenever it finds anything, and we want the SARIF, not
+      # a failed job. Real failures (auth, network, missing tool) still
+      # surface via the upload step's missing-file error.
 
-      - name: Upload Snyk Code SARIF to GitHub
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-code.sarif
-          category: snyk-code
+      - name: Snyk Code (SAST)
+        run: snyk code test --sarif-file-output=snyk-code.sarif || true
 
       - name: Snyk Open Source (SCA)
-        run: snyk monitor --all-projects
+        run: snyk test --all-projects --sarif-file-output=snyk-oss.sarif || true
 
       - name: Snyk IaC
-        run: snyk iac test --report || true
+        run: snyk iac test --sarif-file-output=snyk-iac.sarif . || true
 
       - name: Build local image for container scan
         run: docker build -t "$IMAGE" .
 
       - name: Snyk Container
-        run: snyk container monitor "$IMAGE" --file=Dockerfile
+        run: snyk container test "$IMAGE" --file=Dockerfile --sarif-file-output=snyk-container.sarif || true
+
+      # Snyk also keeps a dashboard view at app.snyk.io; push a snapshot
+      # of each so historical drift is visible there too. `monitor` is
+      # fire-and-forget and shouldn't fail the workflow.
+      - name: Snyk dashboard snapshots
+        run: |
+          snyk monitor --all-projects || true
+          snyk container monitor "$IMAGE" --file=Dockerfile || true
+
+      # Each SARIF gets its own `category` so GitHub Code Scanning shows
+      # them as independent tool runs and doesn't dedupe across them.
+      - name: Upload Snyk Code SARIF
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+      - name: Upload Snyk OSS (SCA) SARIF
+        if: always() && hashFiles('snyk-oss.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-oss.sarif
+          category: snyk-oss
+
+      - name: Upload Snyk IaC SARIF
+        if: always() && hashFiles('snyk-iac.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-iac.sarif
+          category: snyk-iac
+
+      - name: Upload Snyk Container SARIF
+        if: always() && hashFiles('snyk-container.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-container.sarif
+          category: snyk-container
