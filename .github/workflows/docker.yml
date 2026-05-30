@@ -37,9 +37,17 @@ jobs:
 
       - name: Resolve upstream Caddy version
         id: caddy
+        shell: bash
         run: |
-          docker pull --quiet caddy:builder
-          version=$(docker run --rm caddy:builder caddy version | awk '{print $1}' | sed 's/^v//')
+          set -euo pipefail
+          # caddy:builder is build-toolchain-only (no `caddy` binary on PATH);
+          # caddy:latest is the runtime image and carries the binary.
+          docker pull --quiet caddy:latest
+          version=$(docker run --rm caddy:latest caddy version | awk '{print $1}' | sed 's/^v//')
+          if [[ -z "$version" ]]; then
+            echo "::error::failed to resolve upstream Caddy version"
+            exit 1
+          fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "Building against Caddy ${version}"
 
