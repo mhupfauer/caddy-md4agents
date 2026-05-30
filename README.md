@@ -44,6 +44,38 @@ This is a Caddy plugin, so it needs to be compiled into a Caddy binary with
 xcaddy build --with github.com/mhupfauer/caddy-md4agents
 ```
 
+## Docker
+
+A pre-built image follows the upstream `caddy` release cadence and is
+rebuilt daily so it picks up Caddy base-image updates automatically:
+
+```sh
+docker pull ghcr.io/mhupfauer/caddy-md4agents:latest
+```
+
+Tags:
+
+| Tag                    | Pointer                                    |
+| ---------------------- | ------------------------------------------ |
+| `latest`               | Last successful build of `main`            |
+| `caddy-<version>`      | Built against that upstream Caddy release  |
+| `sha-<short-sha>`      | Built from that exact commit               |
+
+Run with a Caddyfile mounted at the standard path:
+
+```sh
+docker run --rm -p 80:80 -p 443:443 -p 443:443/udp \
+  -v $PWD/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v $PWD/site:/srv/site:ro \
+  ghcr.io/mhupfauer/caddy-md4agents:latest
+```
+
+Or build locally against the current checkout:
+
+```sh
+docker build -t caddy-md4agents:dev .
+```
+
 ## Caddyfile
 
 Minimal — static site, defaults everywhere:

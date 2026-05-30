@@ -1,0 +1,10 @@
+.git
+.github
+*.test
+*.out
+.DS_Store
+caddy
+/caddy
+README.md
+LICENSE
+docs/
