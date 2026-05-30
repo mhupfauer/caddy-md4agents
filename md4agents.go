@@ -135,6 +135,14 @@ func (m *MarkdownForAgents) Provision(ctx caddy.Context) error {
 	if m.MaxConcurrent <= 0 {
 		m.MaxConcurrent = max(4, runtime.NumCPU())
 	}
+	if m.CacheTTL == 0 {
+		// Bound how long stale dynamic content can live in memory. The
+		// static path remains exact (mtime invalidates) so this only
+		// affects reverse_proxy / template handlers — without it, a
+		// page that got removed or restricted upstream could keep
+		// serving from cache indefinitely.
+		m.CacheTTL = caddy.Duration(15 * time.Minute)
+	}
 	if len(m.StripTags) == 0 {
 		m.StripTags = []string{"script", "style", "noscript", "iframe", "svg"}
 	}
@@ -172,6 +180,14 @@ func (m *MarkdownForAgents) Provision(ctx caddy.Context) error {
 		} else {
 			abs, _ := filepath.Abs(m.CacheDir)
 			m.cacheResolved = abs
+		}
+		// Loudly warn if the operator has pointed cache_dir at a
+		// subdirectory of Root — file_server would happily serve the
+		// generated sidecars as if they were site assets.
+		if m.rootResolved != "" && pathInside(m.rootResolved, m.cacheResolved) {
+			m.log.Warn("cache_dir is inside root; file_server may expose generated sidecars",
+				zap.String("cache_dir", m.cacheResolved),
+				zap.String("root", m.rootResolved))
 		}
 	}
 

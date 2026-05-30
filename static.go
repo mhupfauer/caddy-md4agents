@@ -143,7 +143,9 @@ func isEscapeErr(err error) bool {
 func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, abs, kind string) error {
 	data, err := readBoundedFile(abs, m.MaxBodyBytes)
 	if err != nil {
-		return err
+		m.log.Debug("static read failed",
+			zap.String("file", abs), zap.String("kind", kind), zap.Error(err))
+		return errSourceUnavailable
 	}
 	e := newEntry(data)
 	m.log.Debug("static markdown served",

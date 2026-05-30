@@ -105,7 +105,7 @@ example.com {
 | `cache_size` | `4096` | In-memory LRU entry count. |
 | `cache_bytes` | `268435456` (256 MiB) | Total in-memory cache byte budget. |
 | `cache_entry_bytes` | `1048576` (1 MiB) | Per-entry cap; oversized entries are rejected. |
-| `cache_ttl` | `0` (no expiry) | TTL for in-memory entries; disk uses mtime. |
+| `cache_ttl` | `15m` | TTL for in-memory entries; disk uses mtime. Set to a longer duration for nearly-static reverse-proxied content, shorter for highly volatile upstreams. |
 | `max_body_bytes` | `4194304` (4 MiB) | Source HTML size cap (both static disk reads and dynamic captures). |
 | `convert_timeout` | `5s` | Per-conversion timeout; on exceed, returns 503. |
 | `max_concurrent` | `max(4, NumCPU)` | Conversion semaphore — bounds CPU/goroutine usage. |
