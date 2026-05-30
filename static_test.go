@@ -8,12 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
 )
 
 func newTestModule(t *testing.T, root string) *MarkdownForAgents {
 	t.Helper()
-	m := &MarkdownForAgents{Root: root, CacheDir: filepath.Join(t.TempDir(), "cache")}
+	m := &MarkdownForAgents{
+		Root:           root,
+		CacheDir:       filepath.Join(t.TempDir(), "cache"),
+		ConvertTimeout: caddy.Duration(5 * time.Second),
+	}
 	cache, err := newCache(64, 0)
 	if err != nil {
 		t.Fatalf("cache: %v", err)

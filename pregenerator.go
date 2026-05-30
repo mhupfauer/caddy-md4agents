@@ -93,7 +93,7 @@ func (p *pregenerator) process(htmlPath string) {
 	if err != nil {
 		return
 	}
-	if _, err := p.m.loadOrGenerate(htmlPath, st); err != nil {
+	if _, err := p.m.loadOrGenerate(context.Background(), htmlPath, st); err != nil {
 		p.m.log.Warn("pregeneration failed",
 			zap.String("file", htmlPath), zap.Error(err))
 	}

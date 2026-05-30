@@ -99,8 +99,19 @@ func (m *MarkdownForAgents) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("max_body_bytes: %v", err)
 				}
 				m.MaxBodyBytes = n
+			case "convert_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := time.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("convert_timeout: %v", err)
+				}
+				m.ConvertTimeout = caddy.Duration(dur)
 			case "pregenerate":
 				m.Pregenerate = true
+			case "allow_authenticated":
+				m.AllowAuthenticated = true
 			case "main_selector":
 				if !d.NextArg() {
 					return d.ArgErr()

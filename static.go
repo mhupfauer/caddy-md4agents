@@ -1,6 +1,7 @@
 package md4agents
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -110,7 +111,7 @@ func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Reques
 	key := fmt.Sprintf("%s|%d|%d", htmlPath, st.ModTime().UnixNano(), st.Size())
 
 	e, err := m.cache.do(key, func() (*entry, error) {
-		return m.loadOrGenerate(htmlPath, st)
+		return m.loadOrGenerate(r.Context(), htmlPath, st)
 	})
 	if err != nil {
 		return err
@@ -121,7 +122,7 @@ func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Reques
 // loadOrGenerate is called once per unique (path, mtime, size) tuple, so
 // the disk-read / conversion / disk-write happens at most once per source
 // version even under load.
-func (m *MarkdownForAgents) loadOrGenerate(htmlPath string, st os.FileInfo) (*entry, error) {
+func (m *MarkdownForAgents) loadOrGenerate(ctx context.Context, htmlPath string, st os.FileInfo) (*entry, error) {
 	sidecar := m.sidecarPath(htmlPath)
 	if sidecar != "" {
 		if sst, err := os.Stat(sidecar); err == nil && !sst.ModTime().Before(st.ModTime()) {
@@ -135,7 +136,7 @@ func (m *MarkdownForAgents) loadOrGenerate(htmlPath string, st os.FileInfo) (*en
 	if err != nil {
 		return nil, err
 	}
-	md, err := m.convert(htmlBytes)
+	md, err := m.convertWithTimeout(ctx, htmlBytes)
 	if err != nil {
 		return nil, fmt.Errorf("convert %s: %w", htmlPath, err)
 	}

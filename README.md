@@ -63,17 +63,19 @@ example.com {
     root * /var/www/site
 
     markdown_for_agents {
-        root            /var/www/site
-        cache_dir       /var/cache/md4agents
-        url_suffix      .md
-        query_param     format
-        cache_size      8192
-        cache_ttl       24h
-        max_body_bytes  8388608
+        root                /var/www/site
+        cache_dir           /var/cache/md4agents
+        url_suffix          .md
+        query_param         format
+        cache_size          8192
+        cache_ttl           24h
+        max_body_bytes      8388608
+        convert_timeout     5s
         pregenerate
-        main_selector   article
-        strip_tags      script style noscript nav footer aside
-        strip_selectors .ads "#cookie-banner"   # quote id selectors — # is a Caddyfile comment
+        allow_authenticated     # opt-in: cache responses for authenticated requests
+        main_selector       article
+        strip_tags          script style noscript nav footer aside
+        strip_selectors     .ads "#cookie-banner"   # quote id selectors — # is a Caddyfile comment
     }
 
     file_server
@@ -97,16 +99,40 @@ example.com {
 | Field | Default | Notes |
 | ----- | ------- | ----- |
 | `root` | — | Static file root. Enables the static-first path. |
-| `cache_dir` | `<root>/.md4agents` | Disk write-through cache for generated MD. |
+| `cache_dir` | `<caddy-data-dir>/md4agents/...` | Disk write-through cache; defaults outside `root` so `file_server` won't serve it. |
 | `url_suffix` | `.md` | URL suffix that requests Markdown. Empty disables. |
 | `query_param` | `format` | Query param checked for `md`/`markdown`. Empty disables. |
 | `cache_size` | `4096` | In-memory LRU capacity. |
 | `cache_ttl` | `0` (no expiry) | TTL for in-memory entries; disk uses mtime. |
 | `max_body_bytes` | `4194304` | Dynamic-path body cap; over-cap streams through unconverted. |
+| `convert_timeout` | `5s` | Per-conversion timeout; on exceed, returns 503 and finishes in background. |
 | `pregenerate` | `false` | Walk `root` on startup and warm the cache. Optional. |
+| `allow_authenticated` | `false` | If true, cache responses to requests carrying `Authorization`/`Cookie`. Only enable for non-user-specific upstreams. |
 | `main_selector` | — | If set, only this element's subtree is converted. |
 | `strip_tags` | `script style noscript iframe svg` | Tags removed entirely from output. |
 | `strip_selectors` | — | Simple `tag`, `.class`, `#id` selectors removed pre-conversion. |
+
+## Cache safety
+
+The shared cache is shared across all clients, so a few hard rules apply:
+
+- Only `GET` and `HEAD` are cacheable.
+- Requests with `Authorization` or `Cookie` headers bypass the cache by
+  default. Set `allow_authenticated` only when upstream content is not
+  user-specific.
+- Upstream responses carrying `Set-Cookie` or `Cache-Control: private` /
+  `no-store` are converted and served once but never cached.
+- The dynamic-path cache key is `path + ?query`, so `/api/p?id=1` and
+  `/api/p?id=2` do not collide.
+
+## File system semantics
+
+- The resolver follows symlinks, matching `file_server`'s default behavior.
+  If your `root` contains a symlink pointing outside `root`, an explicit
+  request can read through it. Use `file_server`'s `hide` or normalize the
+  filesystem if that matters in your threat model.
+- The default `cache_dir` lives in `caddy.AppDataDir()/md4agents/` and is
+  never served by `file_server`.
 
 ## Cache layout
 
