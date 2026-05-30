@@ -53,10 +53,13 @@ func (c *captureWriter) Write(p []byte) (int, error) {
 	if int64(c.body.Len()+len(p)) > c.max {
 		c.overflow = true
 		c.flushHeadersToReal()
-		if _, err := c.ResponseWriter.Write(c.body.Bytes()); err != nil {
+		drained := c.body.Bytes()
+		// Reset before the write so a failure path doesn't leave the
+		// captured bytes pinned for the rest of the request lifetime.
+		c.body = nil
+		if _, err := c.ResponseWriter.Write(drained); err != nil {
 			return 0, err
 		}
-		c.body.Reset()
 		return c.ResponseWriter.Write(p)
 	}
 	return c.body.Write(p)

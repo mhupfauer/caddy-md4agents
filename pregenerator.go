@@ -52,7 +52,7 @@ func (p *pregenerator) run(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for path := range jobs {
-				p.process(path)
+				p.process(ctx, path)
 			}
 		}()
 	}
@@ -88,7 +88,10 @@ func (p *pregenerator) run(ctx context.Context) {
 	}
 }
 
-func (p *pregenerator) process(htmlPath string) {
+func (p *pregenerator) process(ctx context.Context, htmlPath string) {
+	if ctx.Err() != nil {
+		return
+	}
 	// Walk reports a file's path as-listed; resolve and re-check it under
 	// rootResolved so a malicious symlink in the tree can't get its
 	// target pregenerated and cached.
@@ -102,7 +105,10 @@ func (p *pregenerator) process(htmlPath string) {
 	if err != nil || st.IsDir() {
 		return
 	}
-	if _, err := p.m.loadOrGenerate(context.Background(), real, st); err != nil {
+	// Pass the run context through so a config reload (which cancels
+	// the run ctx via Cleanup) actually unblocks in-flight conversions
+	// instead of waiting up to ConvertTimeout per worker.
+	if _, err := p.m.loadOrGenerate(ctx, real, st); err != nil {
 		p.m.log.Warn("pregeneration failed",
 			zap.String("file", real), zap.Error(err))
 	}

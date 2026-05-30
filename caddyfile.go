@@ -85,6 +85,13 @@ func (m *MarkdownForAgents) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
+				if d.Val() == "never" || d.Val() == "0" {
+					// Translate to the negative sentinel; Provision's
+					// zero-default would otherwise overwrite an
+					// operator's explicit "no expiry" choice.
+					m.CacheTTL = caddy.Duration(-1)
+					break
+				}
 				dur, err := time.ParseDuration(d.Val())
 				if err != nil {
 					return d.Errf("cache_ttl: %v", err)

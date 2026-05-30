@@ -120,8 +120,11 @@ func TestStaticFileSizeCapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected size-cap error")
 	}
-	if err != errSourceUnavailable {
-		t.Fatalf("expected redacted errSourceUnavailable, got: %v", err)
+	if _, ok := err.(*sourceError); !ok {
+		t.Fatalf("expected *sourceError, got: %T %v", err, err)
+	}
+	if err.Error() != "source unavailable" {
+		t.Fatalf("error message not redacted: %q", err.Error())
 	}
 }
 

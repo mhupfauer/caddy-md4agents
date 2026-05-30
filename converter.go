@@ -149,18 +149,31 @@ func findFirst(root *html.Node, s selector) *html.Node {
 // promoteToRoot reparents `keep` directly under `doc`, dropping siblings. We
 // keep the document/html/head wrappers intact so the converter still sees a
 // valid tree.
+//
+// Refuses to act if `keep` is body itself, an ancestor of body, or the
+// document root — those cases would create a parent/child cycle (body
+// appended to itself) and either hang the converter or panic.
 func promoteToRoot(doc, keep *html.Node) {
 	body := findFirst(doc, selector{tag: "body"})
-	if body == nil {
+	if body == nil || keep == body || keep == doc || isAncestor(keep, body) {
 		return
 	}
-	// Detach keep from its current parent.
 	dom.RemoveNode(keep)
-	// Clear body children and append keep.
 	for c := body.FirstChild; c != nil; {
 		next := c.NextSibling
 		dom.RemoveNode(c)
 		c = next
 	}
 	body.AppendChild(keep)
+}
+
+// isAncestor reports whether `maybeAncestor` is on the parent chain of
+// `descendant`. The HTML parser produces a finite tree so this terminates.
+func isAncestor(maybeAncestor, descendant *html.Node) bool {
+	for p := descendant.Parent; p != nil; p = p.Parent {
+		if p == maybeAncestor {
+			return true
+		}
+	}
+	return false
 }

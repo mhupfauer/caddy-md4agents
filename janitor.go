@@ -2,6 +2,8 @@ package md4agents
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,8 +78,17 @@ func (j *janitor) sweep(ctx context.Context) {
 		}
 		sourceRel := strings.TrimSuffix(rel, ".md") // back to "...html"
 		source := filepath.Join(j.m.rootResolved, sourceRel)
-		if _, err := os.Stat(source); err == nil {
-			return nil // source still exists
+		// Only treat a confirmed not-exist as "orphan". A transient
+		// EIO/ESTALE during an NFS flap would otherwise cause us to
+		// delete the entire sidecar cache.
+		_, statErr := os.Stat(source)
+		if statErr == nil {
+			return nil
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			j.m.log.Debug("janitor: skip uncertain source",
+				zap.String("source", source), zap.Error(statErr))
+			return nil
 		}
 		if err := os.Remove(path); err == nil {
 			removed++

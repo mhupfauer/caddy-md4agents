@@ -67,9 +67,11 @@ type MarkdownForAgents struct {
 	// 0 → 1 MiB.
 	CacheEntryBytes int64 `json:"cache_entry_bytes,omitempty"`
 
-	// CacheTTL bounds how long an in-memory cache entry is reused. The
-	// on-disk cache uses mtime-based invalidation and ignores TTL. 0 → no
-	// expiry.
+	// CacheTTL bounds how long an in-memory cache entry is reused.
+	//   0  → use default (15m)
+	//   <0 → never expire (use with care; the on-disk cache already
+	//         mtime-invalidates, so this only matters for the dynamic
+	//         path)
 	CacheTTL caddy.Duration `json:"cache_ttl,omitempty"`
 
 	// MaxBodyBytes limits the size of an HTML body we'll attempt to
@@ -263,27 +265,41 @@ func (m *MarkdownForAgents) serveDynamic(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	if rewritePath != "" {
+	// HEAD-on-miss: promote to GET against upstream so we receive a real
+	// HTML body to convert. Without this, RFC 9110 §15.4 lets upstream
+	// return an empty body for HEAD; we'd compute an ETag from empty
+	// markdown that the subsequent GET would not match — silently
+	// breaking client-driven revalidation. The wire response is still
+	// HEAD-correct because writeMarkdown suppresses the body.
+	upstreamReq := r
+	if rewritePath != "" || r.Method == http.MethodHead {
 		r2 := r.Clone(r.Context())
-		r2.URL.Path = rewritePath
+		if rewritePath != "" {
+			r2.URL.Path = rewritePath
+		}
+		if r.Method == http.MethodHead {
+			r2.Method = http.MethodGet
+		}
 		r2.RequestURI = ""
-		r = r2
+		upstreamReq = r2
 	}
 
 	rec := newCaptureWriter(w, m.MaxBodyBytes)
-	if err := next.ServeHTTP(rec, r); err != nil {
+	if err := next.ServeHTTP(rec, upstreamReq); err != nil {
 		return err
 	}
 	if !rec.isConvertibleHTML() {
 		return rec.flush()
 	}
 
-	// Snapshot the upstream headers (allowlist) and Vary union before we
-	// throw the captured response away. These ride along with the
-	// converted entry so cache hits replay the same downstream-cache
-	// semantics the first request saw.
+	// Snapshot the upstream headers (allowlist) and the FULL Vary header
+	// set before we throw the captured response away. Using Values
+	// (not Get) is critical: upstream may have called Header().Add
+	// twice for separate Vary tokens and Get returns only the first.
 	passthrough := snapshotSafeHeaders(rec.Header())
-	mergeVary(passthrough, rec.Header().Get("Vary"))
+	for _, v := range rec.Header().Values("Vary") {
+		passthrough.Add("Vary", v)
+	}
 
 	convert := func() (*entry, error) {
 		md, cerr := m.convertWithTimeout(r.Context(), rec.body.Bytes())
@@ -355,7 +371,9 @@ func responseIsCacheable(rec *captureWriter) bool {
 		hasCacheDirective(cc, "no-cache") || hasCacheDirective(cc, "must-revalidate") {
 		return false
 	}
-	if v := h.Get("Vary"); v != "" {
+	// Iterate all Vary values, not just the first — multiple Add() calls
+	// produce multiple entries and Get would silently drop them.
+	for _, v := range h.Values("Vary") {
 		for _, part := range strings.Split(v, ",") {
 			k := strings.TrimSpace(strings.ToLower(part))
 			if k == "" || k == "accept-encoding" {
@@ -525,14 +543,6 @@ func setMergedVary(h http.Header, stored http.Header) {
 	h.Set("Vary", strings.Join(out, ", "))
 }
 
-// mergeVary adds the upstream Vary value into the snapshotted header
-// map under "Vary" key so it survives into the cache entry.
-func mergeVary(dst http.Header, upstreamVary string) {
-	if upstreamVary == "" {
-		return
-	}
-	dst.Set("Vary", upstreamVary)
-}
 
 // ifNoneMatchHits parses an If-None-Match value (RFC 7232 §3.2).
 func ifNoneMatchHits(header, etag string) bool {

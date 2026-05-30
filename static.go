@@ -21,12 +21,22 @@ import (
 // convert and serve the result, defeating the static-path guard.
 var errPathEscape = errors.New("path escapes root")
 
-// errSourceUnavailable is the public-facing error we surface to Caddy
-// when something filesystem-level went wrong. The real cause (path,
-// size, errno) goes to the structured log; we don't want a stray "file
-// /etc/secrets/x.html does not exist" leaking into a client-visible
-// error page if the operator's error_handler echoes Caddy errors.
-var errSourceUnavailable = errors.New("source unavailable")
+// errSourceUnavailable wraps a filesystem-level cause without leaking
+// it through the public Error() string. We still want to preserve
+// errors.Is identity so an operator's `handle_errors` block (or any
+// wrapper that classifies via fs.ErrNotExist / fs.ErrPermission) can
+// still differentiate 404 from 500. The Error() method redacts the
+// cause; Unwrap() exposes it for errors.Is/As.
+type sourceError struct{ cause error }
+
+func (e *sourceError) Error() string { return "source unavailable" }
+func (e *sourceError) Unwrap() error { return e.cause }
+
+// errSourceUnavailable returns a redacted error that preserves the
+// fs.ErrNotExist / fs.ErrPermission etc. chain identity of `cause`.
+func errSourceUnavailable(cause error) error {
+	return &sourceError{cause: cause}
+}
 
 // serveStatic implements the static-first lookup. It returns (served=true)
 // when the request was fully handled (success, 304, or refused-as-escape);
@@ -145,7 +155,7 @@ func (m *MarkdownForAgents) serveFile(w http.ResponseWriter, r *http.Request, ab
 	if err != nil {
 		m.log.Debug("static read failed",
 			zap.String("file", abs), zap.String("kind", kind), zap.Error(err))
-		return errSourceUnavailable
+		return errSourceUnavailable(err)
 	}
 	e := newEntry(data)
 	m.log.Debug("static markdown served",
@@ -167,14 +177,14 @@ func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Reques
 	st, err := os.Stat(htmlPath)
 	if err != nil {
 		m.log.Debug("static stat failed", zap.String("file", htmlPath), zap.Error(err))
-		return errSourceUnavailable
+		return errSourceUnavailable(err)
 	}
 	if st.Size() > m.MaxBodyBytes {
 		m.log.Warn("source exceeds max_body_bytes",
 			zap.String("file", htmlPath),
 			zap.Int64("size", st.Size()),
 			zap.Int64("max", m.MaxBodyBytes))
-		return errSourceUnavailable
+		return errSourceUnavailable(nil)
 	}
 	key := fmt.Sprintf("%s|%d|%d", htmlPath, st.ModTime().UnixNano(), st.Size())
 
@@ -182,18 +192,18 @@ func (m *MarkdownForAgents) serveGenerated(w http.ResponseWriter, r *http.Reques
 		f, err := os.Open(htmlPath)
 		if err != nil {
 			m.log.Debug("static open failed", zap.String("file", htmlPath), zap.Error(err))
-			return nil, errSourceUnavailable
+			return nil, errSourceUnavailable(err)
 		}
 		st2, err := f.Stat()
 		if err != nil {
 			f.Close()
-			return nil, errSourceUnavailable
+			return nil, errSourceUnavailable(err)
 		}
 		if st2.ModTime() != st.ModTime() || st2.Size() != st.Size() {
 			f.Close()
 			m.log.Info("source changed during open; refusing to cache stale",
 				zap.String("file", htmlPath))
-			return nil, errSourceUnavailable
+			return nil, errSourceUnavailable(nil)
 		}
 		return m.loadOrGenerateFromFile(r.Context(), htmlPath, f, st2)
 	})
@@ -220,18 +230,18 @@ func (m *MarkdownForAgents) loadOrGenerateFromFile(ctx context.Context, htmlPath
 	htmlBytes, err := io.ReadAll(io.LimitReader(f, m.MaxBodyBytes+1))
 	if err != nil {
 		m.log.Debug("static read failed", zap.String("file", htmlPath), zap.Error(err))
-		return nil, errSourceUnavailable
+		return nil, errSourceUnavailable(err)
 	}
 	if int64(len(htmlBytes)) > m.MaxBodyBytes {
 		m.log.Warn("source exceeded max_body_bytes during read",
 			zap.String("file", htmlPath))
-		return nil, errSourceUnavailable
+		return nil, errSourceUnavailable(nil)
 	}
 
 	md, err := m.convertWithTimeout(ctx, htmlBytes)
 	if err != nil {
 		m.log.Warn("conversion failed", zap.String("file", htmlPath), zap.Error(err))
-		return nil, errSourceUnavailable
+		return nil, errSourceUnavailable(err)
 	}
 	mdBytes := []byte(md)
 

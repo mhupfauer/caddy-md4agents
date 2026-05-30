@@ -25,9 +25,9 @@ func (e *entry) expired(ttl time.Duration) bool {
 }
 
 // markdownCache wraps an LRU with a byte budget. Byte accounting uses an
-// atomic counter so the eviction callback (which runs under the LRU's
-// own mutex) can update it without risking a lock-order inversion with
-// the caller of Put/Get.
+// atomic counter (read concurrently by eviction-callback decrements);
+// admission is serialized by `putMu` so the budget check + Add is
+// atomic vs concurrent puts.
 type markdownCache struct {
 	lru      *lru.Cache[string, *entry]
 	ttl      time.Duration
@@ -35,7 +35,8 @@ type markdownCache struct {
 	maxEntry int64
 	bytes    atomic.Int64
 
-	mu       sync.Mutex
+	putMu    sync.Mutex // serializes the admission path
+	mu       sync.Mutex // protects `inflight` only
 	inflight map[string]*inflightCall
 }
 
@@ -83,14 +84,28 @@ func (c *markdownCache) get(key string) (*entry, bool) {
 
 // put rejects oversized entries and pre-evicts oldest until the byte
 // budget admits the new one. Returns false if the entry was too large.
+//
+// We serialize the entire admission under putMu so two concurrent puts
+// can't both observe headroom and then both add — that was the only
+// gap left after switching to atomic byte accounting.
+//
+// If the key already exists in the LRU we have to subtract its old size
+// first: hashicorp/golang-lru does in-place updates for existing keys
+// and does NOT fire the eviction callback, so the old entry's bytes
+// would otherwise leak forever.
 func (c *markdownCache) put(key string, e *entry) bool {
 	size := int64(len(e.Markdown))
 	if size > c.maxEntry {
 		return false
 	}
+	c.putMu.Lock()
+	defer c.putMu.Unlock()
+
+	if old, ok := c.lru.Peek(key); ok {
+		c.bytes.Add(-int64(len(old.Markdown)))
+	}
 	for c.bytes.Load()+size > c.maxBytes {
 		if _, _, ok := c.lru.RemoveOldest(); !ok {
-			// Empty cache and still over budget — give up rather than spin.
 			break
 		}
 	}
