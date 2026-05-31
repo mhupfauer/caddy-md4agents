@@ -62,11 +62,18 @@ func init() {
 //
 //	example.com {
 //	    root * /var/www/site
-//	    markdown_for_agents /var/www/site
+//	    markdown_for_agents {
+//	        root /var/www/site
+//	    }
 //	    file_server
 //	}
 //
 // ```
+//
+// Caddyfile note: always use the block form to set `root`. A
+// bare `markdown_for_agents /var/www/site` would be parsed by
+// Caddy as a path matcher (`/var/www/site`), not as a positional
+// argument to the directive.
 //
 // Author-written `*.md` files win over generated ones; generated
 // artifacts are written to a sidecar cache (`/var/cache/md4agents`

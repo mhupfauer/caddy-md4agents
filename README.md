@@ -93,10 +93,18 @@ Minimal — static site, defaults everywhere:
 ```caddy
 example.com {
     root * /var/www/site
-    markdown_for_agents /var/www/site
+    markdown_for_agents {
+        root /var/www/site
+    }
     file_server
 }
 ```
+
+> **Caddyfile gotcha:** do NOT write `markdown_for_agents /var/www/site`. Any
+> first argument starting with `/` is consumed by Caddy as a path matcher,
+> not as a positional argument — so the directive would only fire for
+> requests to literally `/var/www/site`, with an empty `root`. Always use
+> the block form to set `root`.
 
 Full options:
 
