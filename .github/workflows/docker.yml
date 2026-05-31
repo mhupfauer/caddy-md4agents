@@ -1,18 +1,11 @@
 name: docker
 
 on:
+  # Multi-arch builds take ~5-10min and slow the per-push feedback loop
+  # if they fire on every commit. Restrict to tag-driven releases and
+  # explicit manual runs; main-branch CI stays fast.
   push:
-    branches: [main]
-    # GitHub AND-s `paths` against both branches and tags when all three
-    # are present, so a paths filter would silently skip tag pushes on
-    # commits that don't touch Go/Dockerfile. Drop the filter; the cron
-    # already amortizes cost and most main pushes do touch source.
     tags: ['v*']
-  schedule:
-    # Daily at 06:17 UTC — catches upstream `caddy:builder` rebuilds even
-    # when this repo has had no changes. GHCR layer-dedups so a no-op
-    # rebuild is essentially free.
-    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:
