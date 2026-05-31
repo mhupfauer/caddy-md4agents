@@ -28,8 +28,80 @@ func init() {
 	caddy.RegisterModule(MarkdownForAgents{})
 }
 
-// MarkdownForAgents is the Caddy module. All durations and sizes are zero-value
-// safe: an unset field falls back to a documented default in Provision.
+// MarkdownForAgents serves a Markdown rendition of HTML pages when a
+// client — typically an AI agent — negotiates for it. It implements
+// Cloudflare's "Markdown for Agents" convention on top of Caddy's
+// static and dynamic handlers, with caching, content negotiation,
+// and HTML sanitization built in.
+//
+// ## Why this matters
+//
+// Modern AI agents (Claude, ChatGPT, Perplexity, crawler bots) waste
+// tokens parsing HTML chrome — navigation, scripts, cookie banners,
+// analytics — before reaching the content. Serving the same URL as
+// Markdown gives them roughly 5–10× more useful content per token and
+// measurably improves answer quality on long documents. Same URL,
+// same auth, just `Accept: text/markdown` (or a `.md` suffix).
+//
+// ## Content negotiation
+//
+// A request is served Markdown when any of these is true:
+//
+// Trigger      | Example
+// -------------|--------
+// URL suffix   | `GET /docs/page.md`
+// Query param  | `GET /docs/page?format=md`
+// Accept hdr   | `Accept: text/markdown` (q-value aware vs `text/html`)
+//
+// The first two are stripped before the inner handler sees the
+// request, so the upstream still resolves the underlying HTML.
+//
+// ## Quick start (static site)
+//
+// ```caddy
+// example.com {
+//     root * /var/www/site
+//     markdown_for_agents /var/www/site
+//     file_server
+// }
+// ```
+//
+// Author-written `*.md` files win over generated ones; generated
+// artifacts are written to a sidecar cache (`/var/cache/md4agents`
+// by default) and reused on every subsequent request. Edits to
+// source HTML invalidate cache entries automatically (mtime + size
+// stat) — no watcher required.
+//
+// ## Reverse-proxy mode
+//
+// Omit `root` and the module becomes a streaming converter in front
+// of any dynamic upstream:
+//
+// ```caddy
+// example.com {
+//     markdown_for_agents {
+//         main_selector   article
+//         strip_selectors nav footer .ads
+//     }
+//     reverse_proxy backend:8080
+// }
+// ```
+//
+// ## Cache safety
+//
+// Only `GET` and `HEAD` are cacheable. Requests carrying
+// `Authorization` or `Cookie` headers bypass the shared cache by
+// default; upstream responses with `Set-Cookie`,
+// `Cache-Control: private/no-store`, or a non-trivial `Vary` are
+// converted and served once but never cached.
+//
+// ## More
+//
+// Full documentation, performance notes, and security guidance live
+// at https://github.com/mhupfauer/caddy-md4agents.
+//
+// All durations and sizes are zero-value safe: any unset field
+// falls back to a documented default during provisioning.
 type MarkdownForAgents struct {
 	// Root is the static file root to resolve requests against. When set,
 	// the static-first path is enabled: author `.md` files are served
@@ -51,9 +123,24 @@ type MarkdownForAgents struct {
 	// must be "md" or "markdown". Empty disables query-param negotiation.
 	QueryParam string `json:"query_param,omitempty"`
 
-	StripTags      []string `json:"strip_tags,omitempty"`
+	// StripTags lists HTML tag names removed entirely (with their
+	// subtree) before conversion. Default:
+	// `script style noscript iframe svg`. Useful for stripping
+	// inline analytics, embedded videos, decorative SVGs, etc.
+	StripTags []string `json:"strip_tags,omitempty"`
+
+	// StripSelectors lists simple selectors removed before
+	// conversion. Supported forms: bare tag (`nav`), class
+	// (`.ads`), or id (`#cookie-banner`). Quote id selectors in
+	// the Caddyfile — `#` is a comment marker there.
 	StripSelectors []string `json:"strip_selectors,omitempty"`
-	MainSelector   string   `json:"main_selector,omitempty"`
+
+	// MainSelector, if set, restricts conversion to the subtree
+	// rooted at the first element matching this simple selector
+	// (e.g. `article`, `main`, `.post-body`). Everything outside
+	// is discarded, which is the cleanest way to strip site
+	// chrome on theme-heavy pages.
+	MainSelector string `json:"main_selector,omitempty"`
 
 	// CacheSize bounds the number of cached markdown responses held in
 	// memory. 0 → 4096.
