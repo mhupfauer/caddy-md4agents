@@ -1,0 +1,74 @@
+name: base-image-refresh
+
+# Daily check: has `caddy:latest` been rebuilt upstream? If yes,
+# dispatch `docker.yml` to publish a fresh image. If no, no-op.
+# Avoids the previous "cron every day rebuilds unconditionally"
+# behavior, which burned ~5-10min of runner time even on no-change
+# days.
+
+on:
+  schedule:
+    # 06:17 UTC daily. Off-the-hour to avoid the top-of-hour stampede
+    # against docker.io rate limits.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: write   # required to dispatch docker.yml
+
+concurrency:
+  group: base-image-refresh
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve upstream caddy:latest digest
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect caddy:latest \
+                    --format '{{.Manifest.Digest}}')
+          if [[ -z "$digest" ]]; then
+            echo "::error::failed to resolve caddy:latest digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Upstream caddy:latest = $digest"
+
+      - name: Read digest embedded in last build
+        id: ours
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:latest
+        run: |
+          set -euo pipefail
+          # Pull the runner-arch image only — labels are identical
+          # across platforms in our build, so we don't need both.
+          # `|| true` because :latest may not exist yet on a fresh repo;
+          # an empty result correctly forces a rebuild.
+          if docker pull --quiet "$IMAGE" >/dev/null 2>&1; then
+            digest=$(docker inspect "$IMAGE" \
+                      --format '{{ index .Config.Labels "io.md4agents.caddy_digest" }}' \
+                      2>/dev/null || true)
+          else
+            digest=""
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Last build embedded = ${digest:-<none>}"
+
+      - name: Dispatch docker.yml if upstream changed
+        if: steps.upstream.outputs.digest != steps.ours.outputs.digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::notice::caddy:latest moved (${{ steps.ours.outputs.digest }} -> ${{ steps.upstream.outputs.digest }}); triggering docker.yml"
+          gh workflow run docker.yml --ref main
+
+      - name: Up to date
+        if: steps.upstream.outputs.digest == steps.ours.outputs.digest
+        run: echo "caddy:latest unchanged (${{ steps.upstream.outputs.digest }}); skipping rebuild"
