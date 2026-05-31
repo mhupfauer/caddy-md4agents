@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # publishes the coverage report+badge to the wiki
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -17,6 +17,10 @@ jobs:
   test:
     name: vet + test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    # Scoped here (not workflow-level) so the `build` job stays read-only;
+    # only the coverage-report step needs to push to the wiki.
+    permissions:
+      contents: write
     strategy:
       matrix:
         # go.mod requires Go 1.26 (bumped to clear stdlib CVEs flagged by
@@ -63,7 +67,9 @@ jobs:
       # the badge served from the wiki.
       - name: coverage report (wiki + PR comment)
         if: matrix.go == '1.26' && github.event_name != 'workflow_dispatch'
-        uses: ncruces/go-coverage-report@v0
+        # Pinned to the SHA v0 currently resolves to (v0.3.2,
+        # 2026-01-10). Re-pin after upstream review when bumping.
+        uses: ncruces/go-coverage-report@dfc237255099f2d25066babde51253992175e365  # v0.3.2
         with:
           coverage-file: coverage.out
           report: true
