@@ -1,0 +1,40 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # Don't post the PR comment until every CI run reporting coverage
+    # has finished. With only one upload (Go 1.26) this is just `1`.
+    after_n_builds: 1
+    wait_for_ci: true
+
+coverage:
+  precision: 1
+  round: down
+  range: "60...85"
+  status:
+    project:
+      default:
+        target: auto
+        # Tolerate small drops; flag a meaningful regression.
+        threshold: 1%
+        informational: false
+    patch:
+      default:
+        # New code should be reasonably tested. Loosen later if it bites.
+        target: 70%
+        threshold: 5%
+        informational: false
+
+comment:
+  layout: "header, diff, flags, components, files, footer"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "**/*_test.go"
+  - "**/testdata/**"
+
+flags:
+  unittests:
+    paths:
+      - .
+    carryforward: false

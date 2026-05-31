@@ -62,7 +62,10 @@ jobs:
         with:
           files: coverage.out
           flags: unittests
-          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Fail loudly if the upload breaks again — silent fail-open hid
+          # the "token required" rejection for a long time.
+          fail_ci_if_error: true
 
   build:
     name: xcaddy build
