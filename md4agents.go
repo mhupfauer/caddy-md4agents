@@ -59,11 +59,13 @@ func init() {
 // ## Quick start (static site)
 //
 // ```caddy
-// example.com {
-//     root * /var/www/site
-//     markdown_for_agents /var/www/site
-//     file_server
-// }
+//
+//	example.com {
+//	    root * /var/www/site
+//	    markdown_for_agents /var/www/site
+//	    file_server
+//	}
+//
 // ```
 //
 // Author-written `*.md` files win over generated ones; generated
@@ -78,13 +80,15 @@ func init() {
 // of any dynamic upstream:
 //
 // ```caddy
-// example.com {
-//     markdown_for_agents {
-//         main_selector   article
-//         strip_selectors nav footer .ads
-//     }
-//     reverse_proxy backend:8080
-// }
+//
+//	example.com {
+//	    markdown_for_agents {
+//	        main_selector   article
+//	        strip_selectors nav footer .ads
+//	    }
+//	    reverse_proxy backend:8080
+//	}
+//
 // ```
 //
 // ## Cache safety
