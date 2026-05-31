@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/ci.yml)
 [![Docker](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/docker.yml)
-[![codecov](https://codecov.io/gh/mhupfauer/caddy-md4agents/branch/main/graph/badge.svg)](https://codecov.io/gh/mhupfauer/caddy-md4agents)
+[![Coverage](https://raw.githubusercontent.com/wiki/mhupfauer/caddy-md4agents/coverage.svg)](https://github.com/mhupfauer/caddy-md4agents/wiki/coverage)
 [![CodeQL](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/github-code-scanning/codeql/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/security/code-scanning)
 [![Snyk](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/snyk.yml/badge.svg?branch=main)](https://github.com/mhupfauer/caddy-md4agents/actions/workflows/snyk.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/mhupfauer/caddy-md4agents)](go.mod)

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # publishes the coverage report+badge to the wiki
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -57,19 +57,19 @@ jobs:
           path: coverage.out
           retention-days: 7
 
-      - name: upload coverage to Codecov
-        if: matrix.go == '1.26'
-        uses: codecov/codecov-action@v6
+      # Publishes coverage.html + coverage.svg to the repo's wiki. The
+      # wiki is auto-initialized on first run. No third-party service.
+      # PRs get a comment with the coverage diff; main commits update
+      # the badge served from the wiki.
+      - name: coverage report (wiki + PR comment)
+        if: matrix.go == '1.26' && github.event_name != 'workflow_dispatch'
+        uses: ncruces/go-coverage-report@v0
         with:
-          files: coverage.out
-          flags: unittests
-          token: ${{ secrets.CODECOV_TOKEN }}
-          # TODO: flip back to true once Codecov's "Repository not found"
-          # error clears. The repo was activated via the Codecov GitHub
-          # App on 2026-05-31 but their backend hasn't synced the
-          # installation; their GraphQL is also throwing 500. Tracked
-          # informally — re-enable the moment uploads succeed.
-          fail_ci_if_error: false
+          coverage-file: coverage.out
+          report: true
+          chart: true
+          amend: true
+        continue-on-error: true
 
   build:
     name: xcaddy build
