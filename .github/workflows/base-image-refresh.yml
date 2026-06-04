@@ -67,7 +67,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "::notice::caddy:latest moved (${{ steps.ours.outputs.digest }} -> ${{ steps.upstream.outputs.digest }}); triggering docker.yml"
-          gh workflow run docker.yml --ref main
+          gh workflow run docker.yml --ref main --repo "$GITHUB_REPOSITORY"
 
       - name: Up to date
         if: steps.upstream.outputs.digest == steps.ours.outputs.digest
