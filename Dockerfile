@@ -41,11 +41,12 @@ RUN /out/caddy version \
 # ----- runtime stage ---------------------------------------------------------
 FROM caddy:${CADDY_RUNTIME_TAG}
 
-# Pull patched curl (and libcurl, when present) from the Alpine repo to
-# clear the curl CVEs Snyk flags against the base image. libcurl is not
-# a separate package on all Alpine versions, so fall back to curl-only.
-RUN apk upgrade --no-cache curl libcurl 2>/dev/null \
- || apk upgrade --no-cache curl
+# Pull patched curl/openssl (and their libs, when present) from the Alpine
+# repo to clear the curl and openssl CVEs Snyk flags against the base image.
+# libcurl/libcrypto/libssl are not separate packages on all Alpine versions,
+# so fall back to the always-present curl/openssl packages.
+RUN apk upgrade --no-cache curl libcurl openssl libcrypto3 libssl3 2>/dev/null \
+ || apk upgrade --no-cache curl openssl
 
 COPY --from=builder /out/caddy /usr/bin/caddy
 

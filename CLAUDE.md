@@ -50,8 +50,12 @@ docker build -t caddy-md4agents:dev .
 
 ## Conventions
 
-- **Go 1.26 minimum** (`go.mod` directive). Bumped to clear stdlib CVEs
-  flagged by Snyk; don't lower without replacement.
+- **Go 1.26 minimum** (`go 1.26.0` directive). The `toolchain` directive
+  (currently `go1.26.4`) is the actual stdlib version Snyk scans via the
+  binary's embedded buildinfo — bump it to the latest 1.26.x patch to clear
+  stdlib CVEs, never lower it. Keep the build-stage `GO_BUILDER_TAG` in the
+  Dockerfile on the matching `1.26-alpine` floating tag so the published
+  image's stdlib stays in lockstep. See [Clearing CVEs](#clearing-cves).
 - **gofmt strict** — CI fails on any `gofmt -l` output.
 - **No new top-level packages.** Plugin is intentionally one flat package;
   if a concept needs separation, use a new `*.go` file.
@@ -78,6 +82,22 @@ markdown_for_agents { root /var/www/site }  # right
   preflight short-circuits cleanly when the secret is absent.
 - Vuln reports: GitHub Security Advisories (private). Don't open public
   issues for security findings.
+
+### Clearing CVEs
+
+Snyk alerts on this repo fall into three buckets, each with a fixed remedy:
+
+- **Go stdlib CVEs (`go.mod`)** — bump the `toolchain` directive to the
+  latest 1.26.x patch (`go test ./... && go vet ./...` to confirm), then let
+  CI's `xcaddy build` re-embed the patched buildinfo. Verify with
+  `go version <binary>` → should report the new toolchain.
+- **Base-image package CVEs (`Dockerfile`, e.g. curl/openssl)** — the runtime
+  stage runs `apk upgrade --no-cache <pkgs>` to pull Alpine's patched build
+  ahead of an upstream `caddy` rebuild. Add the flagged package to that line;
+  it no-ops cleanly if Alpine hasn't shipped the fix yet. `base-image-refresh.yml`
+  picks up the upstream fix automatically once published.
+- **Dependency CVEs (module graph)** — `go get <module>@<fixed>` +
+  `go mod tidy`, mirroring the existing Dependabot `go-deps` group.
 
 ## CI tag → image flow
 
