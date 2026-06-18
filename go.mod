@@ -2,7 +2,7 @@ module github.com/mhupfauer/caddy-md4agents
 
 go 1.26.0
 
-toolchain go1.26.3
+toolchain go1.26.4
 
 require (
 	github.com/JohannesKaufmann/dom v0.3.1
