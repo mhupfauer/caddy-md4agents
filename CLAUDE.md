@@ -97,7 +97,14 @@ Snyk alerts on this repo fall into three buckets, each with a fixed remedy:
   it no-ops cleanly if Alpine hasn't shipped the fix yet. `base-image-refresh.yml`
   picks up the upstream fix automatically once published.
 - **Dependency CVEs (module graph)** — `go get <module>@<fixed>` +
-  `go mod tidy`, mirroring the existing Dependabot `go-deps` group.
+  `go mod tidy`, mirroring the existing Dependabot `go-deps` group. If the
+  upstream fix is only on `master` (no tagged release), pin to the fix commit
+  (`go get <module>@<commit>` → pseudo-version) and revert to the release once
+  published. For `github.com/caddyserver/caddy/v2` specifically, `xcaddy` must
+  be given the version — CI and the Dockerfile pass
+  `$(go list -m -f '{{.Version}}' github.com/caddyserver/caddy/v2)` — or it
+  builds the latest *release* and the container binary ships the vulnerable
+  Caddy even though `go.mod` is patched (SCA passes, Container scan still fails).
 
 ## CI tag → image flow
 
