@@ -284,6 +284,15 @@ lockstep, and its runtime stage runs `apk upgrade` for base-image packages
 (curl, openssl) to pull Alpine's patched builds ahead of an upstream `caddy`
 rebuild; `base-image-refresh.yml` then picks up the upstream fix automatically.
 
+Caddy itself is a direct dependency, so CVEs against it are cleared by bumping
+`github.com/caddyserver/caddy/v2` in `go.mod`. When the upstream fix has only
+landed on `master` (no tagged release yet), pin to the fix commit with a
+pseudo-version — `go get github.com/caddyserver/caddy/v2@<commit>` — and switch
+back to the release once it ships. `xcaddy` is passed the version resolved from
+`go.mod` (`go list -m …`) in both the CI build and the Dockerfile, so the
+runtime binary's embedded buildinfo matches the pin; without that, `xcaddy`
+would silently build the latest *release* and ship the vulnerable Caddy.
+
 Vulnerabilities can also be reported privately via
 [GitHub Security Advisories](https://github.com/mhupfauer/caddy-md4agents/security/advisories/new).
 

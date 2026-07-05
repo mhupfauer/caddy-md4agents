@@ -94,8 +94,13 @@ jobs:
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
 
       - name: xcaddy build with local plugin
+        # Pass the Caddy version resolved from go.mod so the built binary's
+        # embedded buildinfo matches the SCA scan. Without an explicit version
+        # xcaddy pins the latest *release*, which lags behind pseudo-version
+        # pins used to pull an unreleased upstream security fix.
         run: |
-          xcaddy build \
+          CADDY_VERSION="$(go list -m -f '{{.Version}}' github.com/caddyserver/caddy/v2)"
+          xcaddy build "$CADDY_VERSION" \
             --with github.com/mhupfauer/caddy-md4agents=. \
             --output ./caddy
 

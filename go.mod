@@ -7,7 +7,7 @@ toolchain go1.26.4
 require (
 	github.com/JohannesKaufmann/dom v0.3.1
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/caddyserver/caddy/v2 v2.11.4
+	github.com/caddyserver/caddy/v2 v2.11.5-0.20260612042621-fcba554d658b
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.56.0

@@ -28,8 +28,13 @@ COPY . .
 
 # xcaddy: compose Caddy with our handler against the local module path,
 # so CI builds verify the *current* commit instead of fetching from a
-# public git ref that might be racing this PR.
-RUN xcaddy build \
+# public git ref that might be racing this PR. The Caddy version is read
+# from go.mod (single source of truth) and passed to xcaddy explicitly —
+# otherwise xcaddy pins the latest *release*, which lags behind a
+# pseudo-version pin used to pull an unreleased upstream security fix, and
+# the runtime binary would ship the vulnerable version.
+RUN CADDY_VERSION="$(go list -m -f '{{.Version}}' github.com/caddyserver/caddy/v2)" \
+ && xcaddy build "$CADDY_VERSION" \
     --with github.com/mhupfauer/caddy-md4agents=/src \
     --output /out/caddy
 
