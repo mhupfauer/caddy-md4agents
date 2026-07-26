@@ -276,7 +276,7 @@ setup window don't fail noisily.
 ### Keeping the build patched
 
 The published binary's Go stdlib is whatever the `toolchain` directive in
-`go.mod` pins (currently `go1.26.4`) — that's the version Snyk reads from the
+`go.mod` pins (currently `go1.26.5`) — that's the version Snyk reads from the
 embedded buildinfo, so stdlib CVEs are cleared by bumping it to the latest
 1.26.x patch, not by changing the `go 1.26.0` minimum. The Dockerfile's build
 stage tracks the matching `1.26-alpine` floating tag so the image stays in

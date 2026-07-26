@@ -50,8 +50,8 @@ FROM caddy:${CADDY_RUNTIME_TAG}
 # repo to clear the curl and openssl CVEs Snyk flags against the base image.
 # libcurl/libcrypto/libssl are not separate packages on all Alpine versions,
 # so fall back to the always-present curl/openssl packages.
-RUN apk upgrade --no-cache curl libcurl openssl libcrypto3 libssl3 2>/dev/null \
- || apk upgrade --no-cache curl openssl
+RUN apk upgrade --no-cache c-ares curl libcurl openssl libcrypto3 libssl3 2>/dev/null \
+ || apk upgrade --no-cache c-ares curl openssl
 
 COPY --from=builder /out/caddy /usr/bin/caddy
 
