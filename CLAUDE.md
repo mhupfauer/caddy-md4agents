@@ -51,7 +51,7 @@ docker build -t caddy-md4agents:dev .
 ## Conventions
 
 - **Go 1.26 minimum** (`go 1.26.0` directive). The `toolchain` directive
-  (currently `go1.26.4`) is the actual stdlib version Snyk scans via the
+  (currently `go1.26.5`) is the actual stdlib version Snyk scans via the
   binary's embedded buildinfo — bump it to the latest 1.26.x patch to clear
   stdlib CVEs, never lower it. Keep the build-stage `GO_BUILDER_TAG` in the
   Dockerfile on the matching `1.26-alpine` floating tag so the published
