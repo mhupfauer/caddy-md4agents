@@ -248,3 +248,28 @@ func TestSafeDirSegmentNoLeak(t *testing.T) {
 		t.Fatalf("expected 16-byte hex (32 chars), got %q", a)
 	}
 }
+
+func TestDotDotTraversalConfinedToRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	mustWrite(t, filepath.Join(root, "index.html"), "<html><body>ROOT</body></html>")
+	mustWrite(t, filepath.Join(parent, "outside", "secret.html"),
+		"<html><body>SECRET</body></html>")
+	mustWrite(t, filepath.Join(parent, "outside", "author.md"), "SECRET-MD\n")
+
+	m := newTestModule(t, root)
+	for _, p := range []string{
+		"/../outside/secret.html",
+		"/docs/../../outside/secret.html",
+		"/../outside/author.html",
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		if _, err := m.serveStatic(rec, req, p); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		if strings.Contains(rec.Body.String(), "SECRET") {
+			t.Fatalf("%s: traversal leaked %q", p, rec.Body.String())
+		}
+	}
+}
