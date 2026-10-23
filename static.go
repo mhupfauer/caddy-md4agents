@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -65,7 +64,7 @@ func (m *MarkdownForAgents) serveStatic(w http.ResponseWriter, r *http.Request, 
 	// cleaning a "/"-rooted path drops every ".." segment, so the joins
 	// below can only land under Root. resolveAndCheck still guards against
 	// symlink escapes; this closes the textual traversal case up front.
-	base = path.Clean("/" + strings.TrimSuffix(base, "/"))
+	base = filepath.ToSlash(filepath.Clean("/" + strings.TrimSuffix(base, "/")))
 
 	author, err := m.resolveAuthor(base)
 	if err == errPathEscape {
