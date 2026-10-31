@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Snyk CLI
-        uses: snyk/actions/setup@12140f4059e244892ae643824a95459a102120dd
+        uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce
 
       # All four scan steps tolerate non-zero exit codes — `snyk test`
       # returns 1 whenever it finds anything, and we want the SARIF, not
